@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 from tkinter import messagebox
 
-from . import config
+from . import clipboard, config
 from .config import APP_NAME, APP_VERSION, AUTO_CLOSE_MS
 from .db import Database
 from .hotkey import Hotkey
@@ -58,7 +58,10 @@ class App:
 
     def quit(self) -> None:
         self._cancel_auto_hide()
-        for closer in (self.tray.stop, self.hotkey.stop, self._ipc_sock.close):
+        closers = [self.tray.stop, self.hotkey.stop]
+        if self._ipc_sock is not None:
+            closers.append(self._ipc_sock.close)
+        for closer in closers:
             try:
                 closer()
             except Exception:
@@ -67,7 +70,7 @@ class App:
 
     # ------------------------------------------------------------- visibility
     def show(self) -> None:
-        self.root.deiconify()
+        self.root.deiconify()  # also restores a minimised ("iconic") window
         self.root.lift()
         self.root.attributes("-topmost", True)
         self.root.focus_force()
@@ -77,29 +80,44 @@ class App:
         self._cancel_auto_hide()
         self.root.withdraw()
 
+    def _is_visible(self) -> bool:
+        # "iconic" (minimised) is just as invisible to the user as "withdrawn".
+        return self.root.state() == "normal"
+
+    def _has_focus(self) -> bool:
+        try:
+            # Empty/None when the focus sits in another application.
+            return bool(self.root.focus_displayof())
+        except (KeyError, tk.TclError):
+            return False
+
     def toggle(self) -> None:
-        if self.root.state() == "withdrawn":
-            self.show()
-        else:
+        # Summon when hidden, minimised, or merely buried behind another
+        # window; only hide when we already have the user's attention.
+        if self._is_visible() and self._has_focus():
             self.hide()
+        else:
+            self.show()
 
     def _ensure_visible(self) -> None:
-        if self.root.state() == "withdrawn":
+        if not self._is_visible():
             self.root.deiconify()
             self.root.lift()
 
     # ------------------------------------------------------------- copy flow
     def copy(self, row) -> None:
-        self.root.clipboard_clear()
-        self.root.clipboard_append(row["content"])
-        self.root.update()  # keep the clipboard alive on Windows
+        # Hands the text to Win32 so it outlives SnipIt; falls back to Tk
+        # (which only lends the clipboard while we run) if that fails.
+        persisted = clipboard.copy(row["content"], self.root)
         if self.detail is not None and self.detail.winfo_exists():
             self.detail.destroy()
             self.detail = None
-        secs = max(1, round(AUTO_CLOSE_MS / 1000))
+        secs = f"{AUTO_CLOSE_MS / 1000:g}"
         self._cancel_auto_hide()
-        self.ui.notify(f"Copied ✓ — hiding in {secs}s · press Esc to keep open",
-                       ms=AUTO_CLOSE_MS + 900)
+        note = f"Copied ✓ — hiding in {secs}s · press Esc to keep open"
+        if not persisted:
+            note = "Copied (only while SnipIt runs) — hiding · Esc to keep open"
+        self.ui.notify(note, ms=AUTO_CLOSE_MS + 900)
         self._auto_hide_job = self.root.after(AUTO_CLOSE_MS, self._auto_hide_fired)
 
     def _auto_hide_fired(self) -> None:
@@ -133,7 +151,7 @@ class App:
         })
 
     def open_add(self) -> None:
-        was_visible = self.root.state() != "withdrawn"
+        was_visible = self._is_visible()
         if not was_visible:
             self._ensure_visible()
 
@@ -214,6 +232,9 @@ class App:
         self.root.after(80, self._poll)
 
     def _start_ipc_thread(self) -> None:
+        if self._ipc_sock is None:  # port was busy; run without signalling
+            return
+
         def serve() -> None:
             while True:
                 try:
@@ -246,6 +267,78 @@ def _ping_running_instance() -> None:
         pass
 
 
+_instance_mutex = None
+
+
+def _already_running() -> bool:
+    """True when another SnipIt owns this session.
+
+    Uses a named mutex rather than the IPC port, so an unrelated process
+    sitting on port 48731 can no longer masquerade as "SnipIt is running".
+    The handle is parked in a module global to keep it alive for our lifetime.
+    """
+    global _instance_mutex
+    if sys.platform != "win32":
+        srv = _try_bind_ipc()  # best effort elsewhere
+        if srv is None:
+            return True
+        srv.close()
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    ERROR_ALREADY_EXISTS = 183
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    handle = kernel32.CreateMutexW(None, False, config.MUTEX_NAME)
+    if not handle:
+        return False  # cannot tell; let the app start rather than block it
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(handle)
+        return True
+    _instance_mutex = handle
+    return False
+
+
+def _remove_database() -> None:
+    """Delete the database *and* its write-ahead log — leaving a stale -wal
+    next to a fresh database is how you resurrect deleted rows."""
+    path = config.db_path()
+    targets = [path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")]
+    locked = []
+    for p in targets:
+        if not p.exists():
+            continue
+        try:
+            p.unlink()
+            print(f"Removed: {p}")
+        except OSError as exc:
+            locked.append(f"{p} ({exc.strerror or exc})")
+    if locked:
+        raise RuntimeError(
+            "Could not remove the database — something still has it open:\n  "
+            + "\n  ".join(locked))
+
+
+def _fatal(exc: BaseException) -> int:
+    """Last-resort error reporting. A --noconsole build has no stderr, so an
+    unhandled exception would otherwise mean the exe silently does nothing."""
+    import traceback
+
+    detail = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    print(detail, file=sys.stderr)
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(APP_NAME, f"{APP_NAME} could not start:\n\n{exc}\n\n{detail[-800:]}")
+        root.destroy()
+    except Exception:
+        pass
+    return 2
+
+
 def main(argv=None) -> int:
     import argparse
 
@@ -256,19 +349,31 @@ def main(argv=None) -> int:
                         help="delete the local database and reseed the sample snippets")
     args = parser.parse_args(argv)
 
-    if args.reset_db:
-        path = config.db_path()
-        if path.exists():
-            path.unlink()
-            print(f"Removed database: {path}")
+    try:
+        # Check for a running instance *first*: on Windows it holds the
+        # database open, so resetting underneath it would fail on a file lock.
+        if _already_running():
+            if args.reset_db:
+                print(f"{APP_NAME} is running — quit it from the tray icon "
+                      "before using --reset-db.", file=sys.stderr)
+                return 1
+            _ping_running_instance()
+            print(f"{APP_NAME} is already running — see the system tray.")
+            return 1
 
-    srv = _try_bind_ipc()
-    if srv is None:
-        _ping_running_instance()
-        print(f"{APP_NAME} is already running — see the system tray.")
-        return 1
+        if args.reset_db:
+            _remove_database()
 
-    app = App(ipc_socket=srv)
-    return app.run()
+        # A busy port is no longer fatal: we just lose the "bring the running
+        # instance forward" signal, which beats refusing to start at all.
+        srv = _try_bind_ipc()
+        if srv is None:
+            print(f"[{APP_NAME}] port {config.IPC_PORT} is busy — "
+                  "running without single-instance signalling.", file=sys.stderr)
+
+        app = App(ipc_socket=srv)
+        return app.run()
+    except Exception as exc:  # noqa: BLE001 - top-level guard for the packaged exe
+        return _fatal(exc)
 
 

@@ -1,19 +1,16 @@
 """Headless-ish UI smoke test: builds the real window, exercises search,
 copy + auto-hide scheduling, then tears everything down."""
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _sandbox  # noqa: F401  (must precede snipit imports)
 
 import tkinter as tk
 
+from snipit.config import MAX_CONTENT_LEN  # noqa: E402
 from snipit.db import Database  # noqa: E402
 from snipit.ui import SearchWindow, EditWindow, DetailWindow, _looks_like_code  # noqa: E402
 
 
 def main():
-    base = os.path.join(os.environ.get("SNIPIT_DATA_DIR", os.getcwd()), "SnipIt")
-    db = Database(os.path.join(base, "snipit.db"))
+    db = Database(_sandbox.db_path())
 
     root = tk.Tk()
     copied = []
@@ -59,6 +56,14 @@ def main():
     ui.clear_search()
     root.update()
     print("placeholder on:", ui._placeholder_on, "| list size:", ui.listbox.size())
+    assert ui._placeholder_on and not ui.has_search_text()
+
+    # idle state must not read as a failed search
+    print("idle count label:", repr(ui.count_lbl.cget("text")),
+          "| status:", repr(ui.status.cget("text")[:20]))
+    assert ui.count_lbl.cget("text").endswith("snippets"), \
+        "an untouched search box is not a search with matches"
+    assert "No matches" not in ui.status.cget("text")
 
     # detail window for a multi-line snippet
     row = db.search("rubber")[0]
@@ -81,16 +86,23 @@ def main():
     print("edit saved:", saved)
     assert saved and saved[0] == ("h", "c1\n  c2")
 
-    # 1024-char guard
+    # over-long content is refused, never silently trimmed
     ew2 = EditWindow(root, on_save=lambda h, c: saved.append((h, c)), title="New snippet")
     root.update()
-    long = "x" * 1500
+    long = "x" * (MAX_CONTENT_LEN + 500)
     ew2.content_text.insert("1.0", long)
-    ew2._on_type()
-    root.update()
+    root.update()          # <<Modified>> fires without any key being released
     text = ew2.content_text.get("1.0", "end-1c")
-    print("content capped at:", len(text))
-    assert len(text) == 1024, "content should be capped at MAX_CONTENT_LEN"
+    print("pasted:", len(long), "| kept:", len(text),
+          "| save button:", ew2._save_btn.cget("state"))
+    assert len(text) == len(long), "content must not be truncated behind the user's back"
+    assert str(ew2._save_btn.cget("state")) == "disabled", "over-long content must block Save"
+
+    # trimming back under the limit re-enables Save
+    ew2.content_text.delete("1.0", f"1.{600}")
+    root.update()
+    print("after trimming, save button:", ew2._save_btn.cget("state"))
+    assert str(ew2._save_btn.cget("state")) == "normal"
     ew2.destroy()
 
     root.destroy()

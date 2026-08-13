@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import font as tkfont
+from tkinter import messagebox
 
 from .config import (
     APP_NAME,
@@ -63,7 +64,7 @@ def _init_fonts(root: tk.Tk) -> None:
 # ================================================================ SearchWindow
 class SearchWindow:
     HINT = ("Enter ⏎ copy · Dbl-click / Ctrl+Enter details · Ctrl+N new · "
-            "Ctrl+E edit · Del delete · Esc hide")
+            "Ctrl+E edit · Ctrl+Del delete · Esc hide")
 
     def __init__(self, root: tk.Tk, db, actions: dict):
         self.root = root
@@ -71,16 +72,15 @@ class SearchWindow:
         self.actions = actions
 
         self.results = []          # sqlite rows aligned 1:1 with listbox items
-        self._placeholder_on = True
         self._search_job = None
         self._notice_job = None
+        self._placeholder = None
 
         _init_fonts(root)
         self._setup_window()
         self._build_widgets()
         self._bind_keys()
         self.refresh()
-        self._set_placeholder(True)
 
     # ------------------------------------------------------------- window
     def _setup_window(self) -> None:
@@ -104,14 +104,22 @@ class SearchWindow:
         top.pack(fill="x", padx=12, pady=(10, 6))
 
         self._search_var = tk.StringVar()
-        self._search_var.trace_add("write", lambda *a: self._schedule_search())
+        self._search_var.trace_add("write", lambda *a: self._on_search_changed())
 
         self.search_entry = tk.Entry(
             top, textvariable=self._search_var, font=BODY_FONT, relief="flat",
             highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT,
-            bg=WHITE, fg=MUTED, insertbackground=FG,
+            bg=WHITE, fg=FG, insertbackground=FG,
         )
         self.search_entry.pack(side="left", fill="x", expand=True, ipady=5)
+
+        # A hint drawn *over* the entry rather than stuffed into its variable:
+        # keeping the query variable truthful is what makes the status bar,
+        # the match count and the "is anything typed?" checks correct.
+        self._placeholder = tk.Label(self.search_entry, text=PLACEHOLDER, bg=WHITE,
+                                     fg=MUTED, font=BODY_FONT, anchor="w", cursor="xterm")
+        self._placeholder.bind("<Button-1>", lambda e: self.search_entry.focus_set())
+        self._sync_placeholder()
 
         self.clear_btn = tk.Button(
             top, text="✕", command=self._clear_search, relief="flat", bg=BG,
@@ -159,19 +167,38 @@ class SearchWindow:
         self.root.bind("<Control-Return>", lambda e: self.open_detail())
         self.root.bind("<Control-n>", lambda e: self.actions["add"]())
         self.root.bind("<Control-e>", lambda e: self.actions["edit"]())
+        # Focus lives in the search box, so a delete shortcut that only works
+        # in the listbox is a delete shortcut that never fires.
+        self.root.bind("<Control-Delete>", lambda e: self._delete_selected())
 
-        self.search_entry.bind("<FocusIn>", self._on_focus_in)
-        self.search_entry.bind("<FocusOut>", self._on_focus_out)
         self.search_entry.bind("<Down>", lambda e: self._move_selection(1))
         self.search_entry.bind("<Up>", lambda e: self._move_selection(-1))
+        # Widget bindings run before the Entry class binding, so this sees the
+        # query as it was *before* the keystroke: Del still edits text whenever
+        # there is text to edit, and only deletes a snippet when there isn't.
+        self.search_entry.bind("<Delete>", self._on_entry_delete)
+        # Handle it here (returning "break") so the Entry cannot also eat a
+        # word of the query on the way past.
+        self.search_entry.bind("<Control-Delete>", lambda e: self._delete_selected())
 
         self.listbox.bind("<Double-Button-1>", lambda e: self.open_detail())
-        self.listbox.bind("<Delete>", lambda e: self.actions["delete"]())
+        self.listbox.bind("<Delete>", lambda e: self._delete_selected())
+
+    def _delete_selected(self) -> str:
+        self.actions["delete"]()
+        return "break"
+
+    def _on_entry_delete(self, _event):
+        if self._search_var.get():
+            return None  # let the Entry delete a character
+        return self._delete_selected()
 
     # ------------------------------------------------------------- search
+    def _on_search_changed(self) -> None:
+        self._sync_placeholder()
+        self._schedule_search()
+
     def _schedule_search(self) -> None:
-        if self._placeholder_on:
-            return
         if self._search_job:
             self.root.after_cancel(self._search_job)
         self._search_job = self.root.after(60, self.refresh)
@@ -180,7 +207,7 @@ class SearchWindow:
         if self._search_job:
             self.root.after_cancel(self._search_job)
             self._search_job = None
-        query = "" if self._placeholder_on else self._search_var.get()
+        query = self._search_var.get()
         self.results = self.db.search(query, MAX_RESULTS)
 
         self.listbox.delete(0, "end")
@@ -214,9 +241,11 @@ class SearchWindow:
         if query:
             self.count_lbl.config(text=f"{n} match" + ("es" if n != 1 else ""), fg=MUTED)
         else:
-            self.count_lbl.config(text=f"{n} snippets", fg=MUTED)
+            self.count_lbl.config(text=f"{n} snippet" + ("s" if n != 1 else ""), fg=MUTED)
         if n == 0 and query:
             self.status.config(text="No matches — try fewer terms", fg=DANGER)
+        elif n == 0:
+            self.status.config(text="No snippets yet — press Ctrl+N to add one", fg=MUTED)
         else:
             self.status.config(text=self.HINT, fg=MUTED)
 
@@ -269,43 +298,31 @@ class SearchWindow:
         self.listbox.see(idx)
 
     # ------------------------------------------------------------- placeholder
-    def _set_placeholder(self, on: bool) -> None:
-        self._placeholder_on = on
-        if self._search_job:
-            self.root.after_cancel(self._search_job)
-            self._search_job = None
-        if on:
-            self._search_var.set(PLACEHOLDER)
-            self.search_entry.config(fg=MUTED)
-            self.refresh()
+    @property
+    def _placeholder_on(self) -> bool:
+        return not self._search_var.get()
+
+    def _sync_placeholder(self) -> None:
+        if self._placeholder is None:
+            return
+        if self._search_var.get():
+            self._placeholder.place_forget()
         else:
-            self._search_var.set("")
-            self.search_entry.config(fg=FG)
-        self._update_status()
-
-    def _on_focus_in(self, _event) -> None:
-        if self._placeholder_on:
-            self._set_placeholder(False)
-
-    def _on_focus_out(self, _event) -> None:
-        if not self._placeholder_on and not self._search_var.get().strip():
-            self._set_placeholder(True)
+            self._placeholder.place(x=6, rely=0.5, anchor="w")
 
     def _clear_search(self) -> None:
-        self._set_placeholder(True)
+        self.clear_search()
 
     def focus_search(self) -> None:
-        if self._placeholder_on:
-            self._set_placeholder(False)
         self.search_entry.focus_set()
         self.search_entry.select_range(0, "end")
 
     def has_search_text(self) -> bool:
-        return not self._placeholder_on and bool(self._search_var.get().strip())
+        return bool(self._search_var.get().strip())
 
     def clear_search(self) -> None:
-        if not self._placeholder_on:
-            self._set_placeholder(True)
+        self._search_var.set("")
+        self.refresh()
 
 
 # ================================================================ DetailWindow
@@ -391,6 +408,7 @@ class EditWindow(tk.Toplevel):
                  initial_content: str = "", title: str = "Snippet"):
         super().__init__(root)
         self._on_save = on_save
+        self._in_modified = False
         self.title(title)
         self.configure(bg=BG)
         self.transient(root)
@@ -412,9 +430,14 @@ class EditWindow(tk.Toplevel):
             highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT,
             bg=WHITE, fg=FG, insertbackground=FG,
         )
+        # Refuse the keystroke at the limit rather than trimming behind the
+        # user's back when they hit Save.
+        self.heading_entry.config(
+            validate="key",
+            validatecommand=(self.register(lambda p: len(p) <= MAX_HEADING_LEN), "%P"))
         self.heading_entry.pack(fill="x", ipady=4, pady=(2, 10))
 
-        tk.Label(body, text=f"Content  (max {MAX_CONTENT_LEN} chars)", bg=BG, fg=MUTED,
+        tk.Label(body, text=f"Content  (up to {MAX_CONTENT_LEN:,} chars)", bg=BG, fg=MUTED,
                  anchor="w", font=SMALL_FONT).pack(fill="x")
         frame = tk.Frame(body, bg=WHITE, highlightthickness=1, highlightbackground=BORDER)
         frame.pack(fill="both", expand=True)
@@ -440,29 +463,51 @@ class EditWindow(tk.Toplevel):
                   bg=BG, fg=MUTED, activebackground=SELECT, font=BODY_FONT,
                   cursor="hand2", padx=12, pady=3).pack(side="right", padx=(0, 8))
 
-        self.content_text.bind("<KeyRelease>", self._on_type)
+        # <<Modified>> rather than <KeyRelease>: a right-click or middle-click
+        # paste never releases a key, and that is exactly when a big snippet
+        # arrives.
+        self.content_text.bind("<<Modified>>", self._on_modified)
         self.content_text.bind("<Control-Return>", lambda e: self._save())
         self.heading_entry.bind("<Return>", lambda e: self.content_text.focus_set())
         self.heading_entry.bind("<Control-Return>", lambda e: self._save())
         self.bind("<Escape>", lambda e: self.destroy())
         self.heading_entry.focus_set()
+        self.content_text.edit_reset()   # the seeded text is not an undo step
+        self.content_text.edit_modified(False)
+        self._on_type()
+
+    def _on_modified(self, _event=None) -> None:
+        if self._in_modified:
+            return
+        self._in_modified = True
+        try:
+            self.content_text.edit_modified(False)  # re-arm the flag
+        finally:
+            self._in_modified = False
         self._on_type()
 
     def _on_type(self, _event=None) -> None:
-        text = self.content_text.get("1.0", "end-1c")
-        if len(text) > MAX_CONTENT_LEN:
-            text = text[:MAX_CONTENT_LEN]
-            self.content_text.delete("1.0", "end")
-            self.content_text.insert("1.0", text)
-        over = len(text) >= MAX_CONTENT_LEN
-        self._counter.config(text=f"{len(text)} / {MAX_CONTENT_LEN}",
-                             fg=DANGER if over else MUTED)
-        state = "normal" if text.strip() else "disabled"
-        self._save_btn.config(state=state)
+        # Never rewrite the buffer here: truncating on the fly silently ate
+        # pasted snippets and left the undo stack unable to bring them back.
+        n = len(self.content_text.get("1.0", "end-1c"))
+        over = n > MAX_CONTENT_LEN
+        self._counter.config(
+            text=f"{n:,} / {MAX_CONTENT_LEN:,}" + ("  — too long to save" if over else ""),
+            fg=DANGER if over else MUTED)
+        empty = not self.content_text.get("1.0", "end-1c").strip()
+        self._save_btn.config(state="disabled" if over or empty else "normal")
 
     def _save(self) -> None:
         text = self.content_text.get("1.0", "end-1c")
         if not text.strip():
+            return
+        if len(text) > MAX_CONTENT_LEN:
+            messagebox.showwarning(
+                APP_NAME,
+                f"This snippet is {len(text):,} characters; the limit is "
+                f"{MAX_CONTENT_LEN:,}.\n\nNothing has been saved or trimmed — "
+                "shorten it (or raise MAX_CONTENT_LEN in config.py) and save again.",
+                parent=self)
             return
         heading = self._heading_var.get().strip()[:MAX_HEADING_LEN]
         self._on_save(heading, text)

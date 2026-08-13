@@ -1,15 +1,17 @@
-"""Verify single-instance IPC and tray icon generation."""
-import os
-import socket
-import sys
+"""Verify single-instance detection, IPC signalling and tray icon generation."""
+import _sandbox  # noqa: F401  (must precede snipit imports)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from snipit.app import _ping_running_instance, _try_bind_ipc  # noqa: E402
+from snipit.app import _already_running, _ping_running_instance, _try_bind_ipc  # noqa: E402
 from snipit.tray import build_icon_image  # noqa: E402
 
 
 def main():
+    # Single-instance detection hangs off a named mutex, not the port, so an
+    # unrelated process squatting on 48731 can no longer impersonate SnipIt.
+    assert _already_running() is False, "first call should claim the mutex"
+    assert _already_running() is True, "second call should see it is taken"
+    print("named-mutex single-instance detection: OK")
+
     # tray icon renders
     img = build_icon_image()
     print("icon size:", img.size, "mode:", img.mode)
@@ -19,10 +21,10 @@ def main():
     srv = _try_bind_ipc()
     assert srv is not None, "first instance should bind the IPC port"
 
-    # second instance fails to bind
+    # a busy port now degrades to "no signalling" instead of refusing to start
     again = _try_bind_ipc()
-    assert again is None, "second instance must not bind the same port"
-    print("second instance correctly blocked")
+    assert again is None, "the port cannot be bound twice"
+    print("busy port reported (App accepts ipc_socket=None and runs on)")
 
     # pinging the running instance succeeds
     _ping_running_instance()

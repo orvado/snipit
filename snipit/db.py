@@ -60,24 +60,23 @@ class Database:
         heading or the content (case-insensitive, AND semantics)."""
         terms = [t.strip().lower() for t in query.split() if t.strip()]
         if not terms:
-            rows = self.conn.execute(
-                "SELECT * FROM snippets ORDER BY lower(heading), id"
+            return self.conn.execute(
+                "SELECT * FROM snippets ORDER BY lower(heading), id LIMIT ?", (limit,)
             ).fetchall()
-        else:
-            clauses, params = [], []
-            for t in terms:
-                like = self._like(t)
-                clauses.append(
-                    "(lower(heading) LIKE ? ESCAPE '\\' OR lower(content) LIKE ? ESCAPE '\\')"
-                )
-                params += [like, like]
-            sql = (
-                "SELECT * FROM snippets WHERE "
-                + " AND ".join(clauses)
-                + " ORDER BY lower(heading), id"
+
+        clauses, params = [], []
+        for t in terms:
+            like = self._like(t)
+            clauses.append(
+                "(lower(heading) LIKE ? ESCAPE '\\' OR lower(content) LIKE ? ESCAPE '\\')"
             )
-            rows = self.conn.execute(sql, params).fetchall()
-        return rows[:limit]
+            params += [like, like]
+        sql = (
+            "SELECT * FROM snippets WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY lower(heading), id LIMIT ?"
+        )
+        return self.conn.execute(sql, params + [limit]).fetchall()
 
     def count(self) -> int:
         return self.conn.execute("SELECT COUNT(*) FROM snippets").fetchone()[0]

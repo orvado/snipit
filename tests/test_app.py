@@ -1,14 +1,18 @@
 """End-to-end app smoke test: builds the real App (tray, hotkey, IPC),
-exercises the copy -> auto-hide -> Esc-cancel flow, then quits."""
-import os
-import sys
+exercises the copy -> auto-hide -> Esc-cancel flow, then quits.
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+Runs against a throwaway data directory (see _sandbox) — it used to seed and
+mutate the live database in %APPDATA%.
+"""
+import _sandbox  # noqa: F401  (must precede snipit imports)
 
+from snipit import clipboard  # noqa: E402
 from snipit.app import App, _try_bind_ipc  # noqa: E402
 
 
 def main():
+    _sandbox.borrow_clipboard()   # copies outlive us now; give it back on exit
+
     srv = _try_bind_ipc()
     assert srv is not None, "IPC socket should bind"
 
@@ -22,7 +26,9 @@ def main():
         row = app.db.search("")[0]
         app.copy(row)
         results["pending"] = app._auto_hide_job is not None
-        results["clipboard"] = root.clipboard_get()
+        # Read it back through Win32, not Tk: that is what every other
+        # application sees, and what used to be missing.
+        results["clipboard"] = clipboard.paste().replace("\r\n", "\n")
 
     def step_escape_cancel():
         # cancel the pending auto-close like the user pressing Esc

@@ -14,16 +14,27 @@ DEFAULT_HOTKEY = os.environ.get("SNIPIT_HOTKEY", "ctrl+alt+s")
 # The user can press Esc during this window to cancel the auto-hide.
 AUTO_CLOSE_MS = 1500
 
-# Performance guards. SQLite TEXT can hold far more, but hundreds of multi-KB
-# rows would slow down progressive search on every keystroke.
-MAX_CONTENT_LEN = 1024
+# Sanity limits, not performance guards: measured at 500 rows x 8 KB, a full
+# three-term progressive search costs ~15 ms — well under the 60 ms keystroke
+# debounce — so the cap only needs to be large enough for real code snippets.
+# Over-long content is refused at save time; it is never silently truncated.
+MAX_CONTENT_LEN = 32768
 MAX_HEADING_LEN = 120
 
 # Upper bound of rows rendered in the single-line search list.
 MAX_RESULTS = 300
 
+# Windows clipboard formats are documented as CRLF-delimited. Set to False to
+# put snippets on the clipboard with their stored line endings instead.
+CLIPBOARD_CRLF = True
+
 # Fixed localhost port used for single-instance signalling.
 IPC_PORT = 48731
+
+# Named mutex used for single-instance *detection* on Windows (the port above
+# only carries the "come to the front" signal). Session-local on purpose: two
+# users switched between accounts each get their own instance and own database.
+MUTEX_NAME = "Local\\SnipIt.SingleInstance.v1"
 
 # Window geometry.
 WINDOW_WIDTH = 720

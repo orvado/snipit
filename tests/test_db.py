@@ -1,15 +1,11 @@
 """Quick sanity tests for the SnipIt data layer (no GUI needed)."""
-import os
-import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _sandbox  # noqa: F401  (must precede snipit imports)
 
 from snipit.db import Database  # noqa: E402
 
 
 def main():
-    base = os.path.join(os.environ.get("SNIPIT_DATA_DIR", os.getcwd()), "SnipIt")
-    path = os.path.join(base, "snipit.db")
+    path = _sandbox.db_path()
     db = Database(path)
     print("first_run:", db.first_run)
     print("count:", db.count())
