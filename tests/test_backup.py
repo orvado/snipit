@@ -181,8 +181,10 @@ def main():
             q = parse_qs(urlparse(url).query)
             assert q.get("state"), "authorize URL must carry state"
             redirect = urlparse(q["redirect_uri"][0])
+            assert redirect.hostname == "localhost", \
+                "redirect must use localhost so proxy bypass lists apply"
             import http.client
-            conn = http.client.HTTPConnection("127.0.0.1", redirect.port, timeout=5)
+            conn = http.client.HTTPConnection(redirect.hostname, redirect.port, timeout=5)
             conn.request("GET", f"/?code=fakecode&state={q['state'][0]}")
             resp = conn.getresponse()
             body = resp.read().decode()
@@ -196,7 +198,7 @@ def main():
     def fake_exchange(url2, data, headers):
         assert url2 == "https://oauth2.googleapis.com/token"
         # urlencode percent-encodes the redirect_uri value
-        assert b"redirect_uri=http%3A%2F%2F127.0.0.1%3A" in data \
+        assert b"redirect_uri=http%3A%2F%2Flocalhost%3A" in data \
             and b"grant_type=authorization_code" in data
         return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
 

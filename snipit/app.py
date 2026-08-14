@@ -495,13 +495,17 @@ def _run_connect_dance(client_id: str, scopes: list[str],
     browser, wait for the redirect, exchange the code. Returns tokens.
 
     ``open_browser`` and ``exchange_transport`` are injectable for tests.
-    The redirect URI follows Google's canonical desktop form
-    ``http://127.0.0.1:port`` (no trailing slash).
+    The redirect URI uses the ``localhost`` hostname (Google's own desktop
+    library does the same): proxy/VPN clients commonly exclude ``localhost``
+    from their bypass list but not the raw ``127.0.0.1`` IP, and a proxy
+    that intercepts the loopback navigation makes the dance fail silently.
+    The server binds ``::1`` first (the usual first ``localhost`` resolution
+    on Windows) with a ``127.0.0.1`` fallback.
     """
     verifier = make_code_verifier()
     state = secrets.token_urlsafe(16)
     port = _free_port()
-    redirect_uri = f"http://127.0.0.1:{port}"
+    redirect_uri = f"http://localhost:{port}"
     url = build_authorize_url(client_id, redirect_uri, state, verifier, scopes)
 
     class _Handler(BaseHTTPRequestHandler):
@@ -522,7 +526,10 @@ def _run_connect_dance(client_id: str, scopes: list[str],
         def log_message(self, *args):
             pass
 
-    server = HTTPServer(("127.0.0.1", port), _Handler)  # binds now
+    try:
+        server = HTTPServer(("::1", port), _Handler)
+    except OSError:                       # no IPv6 loopback -> IPv4
+        server = HTTPServer(("127.0.0.1", port), _Handler)
     server.auth_code = None
     # handle_request() blocks waiting for a connection; a timeout makes the
     # deadline below real, so a redirect that never arrives cannot hang the
@@ -540,7 +547,8 @@ def _run_connect_dance(client_id: str, scopes: list[str],
         if server.auth_code is None:
             raise TimeoutError(
                 "sign-in timed out — the browser never reached the local "
-                "callback page")
+                "callback page (if you use a proxy/VPN, make sure "
+                "localhost is excluded from it)")
         return exchange_code(exchange_transport, server.auth_code, verifier,
                              redirect_uri, client_id)
     finally:
