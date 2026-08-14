@@ -223,6 +223,31 @@ def main():
         print(f"  no-redirect timeout after {elapsed:.1f}s")
         assert elapsed < 6, "deadline must be enforced (was hanging forever)"
 
+    # A token endpoint that stalls after the redirect must NOT leave the
+    # flow frozen on "Signed in — exchanging code…" forever. The exchange
+    # needs its own hard deadline independent of socket timeouts (a proxy
+    # that trickles bytes keeps a socket alive past its per-op timeout).
+    print("  exchange stall:")
+    import threading as _threading  # noqa: E402
+    stall = _threading.Event()
+
+    def hanging_transport(url2, data, headers):
+        stall.wait(60)   # token endpoint that never answers
+        raise AssertionError("transport must be abandoned by the deadline")
+
+    start = _time.monotonic()
+    try:
+        _run_connect_dance("cid", ["s"], open_browser=fake_browser,
+                           exchange_transport=hanging_transport,
+                           timeout_s=10, exchange_timeout_s=1)
+        raise AssertionError("stalled exchange must time out")
+    except TimeoutError:
+        elapsed = _time.monotonic() - start
+        print(f"  exchange stall timed out after {elapsed:.1f}s")
+        assert elapsed < 5, "exchange deadline must be enforced (was hanging forever)"
+    finally:
+        stall.set()   # release the abandoned daemon thread
+
     print("BACKUP PRIMITIVES PASSED")
 
 

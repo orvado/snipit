@@ -334,13 +334,21 @@ class App:
 
     def _cloud_connected(self) -> None:
         self._connecting = False
-        self._attach_cloud(GoogleDriveProvider(
-            config.GOOGLE_CLIENT_ID, self._cloud_token_getter()))
-        self.ui.notify("Cloud connected ✓", color=OK)
-        win = self._cloud_win
-        if win is not None and win.winfo_exists():
-            win.attach(self.cloud_provider, self.backup_store)
-            self._cloud_list()
+        try:
+            self._attach_cloud(GoogleDriveProvider(
+                config.GOOGLE_CLIENT_ID, self._cloud_token_getter()))
+            self.ui.notify("Cloud connected ✓", color=OK)
+            win = self._cloud_win
+            if win is not None and win.winfo_exists():
+                win.attach(self.cloud_provider, self.backup_store)
+                self._cloud_list()
+        except Exception as exc:
+            # Runs on the UI thread; a failure must not vanish silently
+            # (the tray user never sees stderr).
+            print(f"[SnipIt] connect failed after sign-in: {exc}",
+                  file=sys.stderr)
+            traceback.print_exc()
+            self._cloud_error(f"connect failed: {exc}")
 
     def disconnect_cloud(self) -> None:
         try:
@@ -506,7 +514,8 @@ def _run_connect_dance(client_id: str, scopes: list[str],
                        open_browser=webbrowser.open,
                        exchange_transport=None,
                        on_redirect=None,
-                       timeout_s: float = 120.0) -> dict:
+                       timeout_s: float = 120.0,
+                       exchange_timeout_s: float = 30.0) -> dict:
     """OAuth authorize-in-browser dance: bind the loopback server, open the
     browser, wait for the redirect, exchange the code. Returns tokens.
 
@@ -519,6 +528,11 @@ def _run_connect_dance(client_id: str, scopes: list[str],
     that intercepts the loopback navigation makes the dance fail silently.
     The server binds ``::1`` first (the usual first ``localhost`` resolution
     on Windows) with a ``127.0.0.1`` fallback.
+    ``timeout_s`` bounds the browser sign-in wait; ``exchange_timeout_s``
+    bounds the token exchange itself. The exchange runs on a daemon thread
+    with a hard join deadline: a per-socket timeout is not enough, because
+    a proxy that trickles bytes keeps a connection alive past it and the
+    flow would sit frozen on "Signed in — exchanging code…" forever.
     """
     verifier = make_code_verifier()
     state = secrets.token_urlsafe(16)
@@ -573,10 +587,44 @@ def _run_connect_dance(client_id: str, scopes: list[str],
               file=sys.stderr)
         if on_redirect is not None:
             on_redirect()
-        return exchange_code(exchange_transport, server.auth_code, verifier,
-                             redirect_uri, client_id)
+        return _exchange_with_deadline(exchange_transport, server.auth_code,
+                                       verifier, redirect_uri, client_id,
+                                       exchange_timeout_s)
     finally:
         server.server_close()
+
+
+def _exchange_with_deadline(transport, code: str, verifier: str,
+                            redirect_uri: str, client_id: str,
+                            timeout_s: float) -> dict:
+    """Exchange the code, abandoning the attempt after ``timeout_s``.
+
+    urllib's per-socket timeout does not bound the total exchange: a proxy
+    that trickles bytes keeps the socket alive past it, so the connect flow
+    would otherwise sit on "Signed in — exchanging code…" forever. Run the
+    exchange on a daemon thread and raise TimeoutError when the deadline
+    passes instead; the abandoned thread dies with the process.
+    """
+    holder: dict = {}
+
+    def _do_exchange() -> None:
+        try:
+            holder["tokens"] = exchange_code(transport, code, verifier,
+                                             redirect_uri, client_id)
+        except BaseException as exc:      # noqa: BLE001 - re-raised below
+            holder["exc"] = exc
+
+    worker = threading.Thread(target=_do_exchange, daemon=True,
+                              name="snipit-oauth-exchange")
+    worker.start()
+    worker.join(timeout=timeout_s)
+    if worker.is_alive():
+        raise TimeoutError(
+            "token exchange timed out — Google did not answer within "
+            f"{timeout_s:.0f}s (proxy/VPN stalling the token endpoint?)")
+    if "exc" in holder:
+        raise holder["exc"]
+    return holder["tokens"]
 
 
 def _try_bind_ipc():
