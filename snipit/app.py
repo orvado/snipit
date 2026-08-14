@@ -489,13 +489,19 @@ def _free_port() -> int:
 
 def _run_connect_dance(client_id: str, scopes: list[str],
                        open_browser=webbrowser.open,
+                       exchange_transport=None,
                        timeout_s: float = 120.0) -> dict:
     """OAuth authorize-in-browser dance: bind the loopback server, open the
-    browser, wait for the redirect, exchange the code. Returns tokens."""
+    browser, wait for the redirect, exchange the code. Returns tokens.
+
+    ``open_browser`` and ``exchange_transport`` are injectable for tests.
+    The redirect URI follows Google's canonical desktop form
+    ``http://127.0.0.1:port`` (no trailing slash).
+    """
     verifier = make_code_verifier()
     state = secrets.token_urlsafe(16)
     port = _free_port()
-    redirect_uri = f"http://127.0.0.1:{port}/"
+    redirect_uri = f"http://127.0.0.1:{port}"
     url = build_authorize_url(client_id, redirect_uri, state, verifier, scopes)
 
     class _Handler(BaseHTTPRequestHandler):
@@ -518,14 +524,25 @@ def _run_connect_dance(client_id: str, scopes: list[str],
 
     server = HTTPServer(("127.0.0.1", port), _Handler)  # binds now
     server.auth_code = None
+    # handle_request() blocks waiting for a connection; a timeout makes the
+    # deadline below real, so a redirect that never arrives cannot hang the
+    # connect flow forever (previously it stayed on "Waiting for browser
+    # sign-in…" indefinitely).
+    server.timeout = 0.5
     try:
         open_browser(url)
         deadline = time.monotonic() + timeout_s
         while server.auth_code is None and time.monotonic() < deadline:
-            server.handle_request()
+            try:
+                server.handle_request()
+            except OSError:
+                continue   # a browser abort must not kill the dance
         if server.auth_code is None:
-            raise TimeoutError("sign-in timed out — try again")
-        return exchange_code(None, server.auth_code, verifier, redirect_uri, client_id)
+            raise TimeoutError(
+                "sign-in timed out — the browser never reached the local "
+                "callback page")
+        return exchange_code(exchange_transport, server.auth_code, verifier,
+                             redirect_uri, client_id)
     finally:
         server.server_close()
 

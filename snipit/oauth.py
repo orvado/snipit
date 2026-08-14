@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import secrets
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -47,12 +48,19 @@ def _post_form(transport, url: str, data: dict) -> dict:
 
     A transport is called as ``transport(url, body_bytes, headers)`` and
     must return the parsed JSON dict. When None, urllib is used directly.
+    Token-endpoint rejections surface the provider's error body (e.g.
+    ``invalid_grant: ...``) instead of a bare HTTP status.
     """
     body = urllib.parse.urlencode(data).encode()
     if transport is None:
         req = urllib.request.Request(url, data=body, method="POST")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode())
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise RuntimeError(
+                f"token endpoint {exc.code}: {detail or exc.reason}") from exc
     return transport(url, body, {})
 
 

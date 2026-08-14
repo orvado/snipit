@@ -166,6 +166,56 @@ def main():
     print("  methods:", methods)
     assert "PATCH" in methods and "DELETE" in methods and methods.count("POST") >= 1
 
+    # --- connect dance end-to-end (simulated browser) ------------------
+    print("--- connect dance:")
+    import time as _time  # noqa: E402
+    from urllib.parse import parse_qs, urlparse  # noqa: E402
+    from snipit.app import _run_connect_dance  # noqa: E402
+
+    def fake_browser(url):
+        # Simulate Google's redirect asynchronously: webbrowser.open returns
+        # immediately in real life and the redirect lands later while the
+        # serve loop runs, so the redirect must happen on its own thread.
+        def _do_redirect():
+            _time.sleep(0.2)   # let the serve loop start
+            q = parse_qs(urlparse(url).query)
+            assert q.get("state"), "authorize URL must carry state"
+            redirect = urlparse(q["redirect_uri"][0])
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", redirect.port, timeout=5)
+            conn.request("GET", f"/?code=fakecode&state={q['state'][0]}")
+            resp = conn.getresponse()
+            body = resp.read().decode()
+            conn.close()
+            assert resp.status == 200 and "SnipIt" in body, \
+                "loopback server must serve the signed-in page"
+
+        import threading as _threading
+        _threading.Thread(target=_do_redirect, daemon=True).start()
+
+    def fake_exchange(url2, data, headers):
+        assert url2 == "https://oauth2.googleapis.com/token"
+        # urlencode percent-encodes the redirect_uri value
+        assert b"redirect_uri=http%3A%2F%2F127.0.0.1%3A" in data \
+            and b"grant_type=authorization_code" in data
+        return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+
+    tokens = _run_connect_dance("cid", ["https://www.googleapis.com/auth/drive.appdata"],
+                                open_browser=fake_browser, exchange_transport=fake_exchange,
+                                timeout_s=10)
+    print("  dance tokens:", sorted(tokens))
+    assert tokens["refresh_token"] == "rt", "dance must return exchanged tokens"
+
+    start = _time.monotonic()
+    try:
+        _run_connect_dance("cid", ["s"], open_browser=lambda u: None,
+                           exchange_transport=fake_exchange, timeout_s=2)
+        raise AssertionError("dance with no redirect must time out")
+    except TimeoutError:
+        elapsed = _time.monotonic() - start
+        print(f"  no-redirect timeout after {elapsed:.1f}s")
+        assert elapsed < 6, "deadline must be enforced (was hanging forever)"
+
     print("BACKUP PRIMITIVES PASSED")
 
 
