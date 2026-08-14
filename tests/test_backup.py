@@ -143,6 +143,39 @@ def main():
     assert TokenStore(_sandbox.db_path("missing.json")).load() == {}
     print("  PKCE url:", url[:80], "…")
 
+    # --- GoogleDriveProvider request shapes ----------------------------
+    print("--- GoogleDriveProvider:")
+    from snipit.cloud import GoogleDriveProvider  # noqa: E402
+
+    calls = []
+
+    def drive_transport(url2, data=None, headers=None, method=None):
+        calls.append((method or ("POST" if data is not None else "GET"), url2))
+        if "drive/v3/files?" in url2 and not data and method != "DELETE":
+            return {"files": [{"id": "f1", "name": "snipit_backup_x.db",
+                               "createdTime": "2026-01-01T00:00:00", "size": "5"}]}
+        if "upload/drive" in url2:
+            return {"id": "f1"}
+        if "alt=media" in url2:
+            return b"SQLite format 3\x00payload"
+        return {}
+
+    prov = GoogleDriveProvider("cid", lambda: "at", transport=drive_transport)
+    metas = prov.list()
+    assert metas[0].name == "snipit_backup_x.db" and metas[0].size == 5 \
+        and metas[0].id == "f1"
+    up = Path(_sandbox.db_path("up.db"))
+    up.write_bytes(b"payload")
+    prov.upload("snipit_backup_x.db", up)
+    dl = Path(_sandbox.db_path("dl.db"))
+    prov.download("snipit_backup_x.db", dl)
+    assert dl.read_bytes() == b"SQLite format 3\x00payload", \
+        "download must write the raw file bytes"
+    prov.delete("snipit_backup_x.db")
+    methods = [m for m, _ in calls]
+    print("  methods:", methods)
+    assert "PATCH" in methods and "DELETE" in methods and methods.count("POST") >= 1
+
     print("BACKUP PRIMITIVES PASSED")
 
 
