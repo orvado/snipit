@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import tkinter as tk
+import traceback
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from tkinter import messagebox
@@ -308,14 +309,24 @@ class App:
 
         def work() -> None:
             try:
-                tokens = _run_connect_dance(config.GOOGLE_CLIENT_ID, config.CLOUD_SCOPES)
+                tokens = _run_connect_dance(
+                    config.GOOGLE_CLIENT_ID, config.CLOUD_SCOPES,
+                    on_redirect=lambda: self._queue.put(self._signin_stage))
                 TokenStore(config.cloud_token_path()).save(tokens)
             except Exception as exc:
+                print(f"[SnipIt] OAuth connect failed: {exc}", file=sys.stderr)
                 self._queue.put(lambda: self._connect_failed(str(exc)))
                 return
+            print("[SnipIt] OAuth: connected", file=sys.stderr)
             self._queue.put(self._cloud_connected)
 
         threading.Thread(target=work, daemon=True, name="snipit-cloud-connect").start()
+
+    def _signin_stage(self) -> None:
+        """Main thread: the browser callback arrived; exchange is running."""
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_status("Signed in — exchanging code…")
 
     def _connect_failed(self, msg: str) -> None:
         self._connecting = False
@@ -458,7 +469,11 @@ class App:
                 try:
                     fn()
                 except Exception as exc:
+                    # Callbacks run on the UI thread; a failure must not
+                    # vanish silently (the status bar is the user's only
+                    # surface when running from the tray).
                     print(f"[SnipIt] callback error: {exc}", file=sys.stderr)
+                    traceback.print_exc()
         except queue.Empty:
             pass
         self.root.after(80, self._poll)
@@ -490,11 +505,14 @@ def _free_port() -> int:
 def _run_connect_dance(client_id: str, scopes: list[str],
                        open_browser=webbrowser.open,
                        exchange_transport=None,
+                       on_redirect=None,
                        timeout_s: float = 120.0) -> dict:
     """OAuth authorize-in-browser dance: bind the loopback server, open the
     browser, wait for the redirect, exchange the code. Returns tokens.
 
-    ``open_browser`` and ``exchange_transport`` are injectable for tests.
+    ``open_browser`` and ``exchange_transport`` are injectable for tests;
+    ``on_redirect`` (if given) is called once the callback arrives, before
+    the token exchange, so callers can advance their UI status.
     The redirect URI uses the ``localhost`` hostname (Google's own desktop
     library does the same): proxy/VPN clients commonly exclude ``localhost``
     from their bypass list but not the raw ``127.0.0.1`` IP, and a proxy
@@ -537,6 +555,8 @@ def _run_connect_dance(client_id: str, scopes: list[str],
     # sign-in…" indefinitely).
     server.timeout = 0.5
     try:
+        print(f"[SnipIt] OAuth: opening browser, waiting for callback at "
+              f"{redirect_uri}", file=sys.stderr)
         open_browser(url)
         deadline = time.monotonic() + timeout_s
         while server.auth_code is None and time.monotonic() < deadline:
@@ -549,6 +569,10 @@ def _run_connect_dance(client_id: str, scopes: list[str],
                 "sign-in timed out — the browser never reached the local "
                 "callback page (if you use a proxy/VPN, make sure "
                 "localhost is excluded from it)")
+        print("[SnipIt] OAuth: callback received, exchanging code…",
+              file=sys.stderr)
+        if on_redirect is not None:
+            on_redirect()
         return exchange_code(exchange_transport, server.auth_code, verifier,
                              redirect_uri, client_id)
     finally:

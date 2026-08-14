@@ -172,6 +172,8 @@ def main():
     from urllib.parse import parse_qs, urlparse  # noqa: E402
     from snipit.app import _run_connect_dance  # noqa: E402
 
+    redirect_seen = {"fired": False}
+
     def fake_browser(url):
         # Simulate Google's redirect asynchronously: webbrowser.open returns
         # immediately in real life and the redirect lands later while the
@@ -200,13 +202,16 @@ def main():
         # urlencode percent-encodes the redirect_uri value
         assert b"redirect_uri=http%3A%2F%2Flocalhost%3A" in data \
             and b"grant_type=authorization_code" in data
+        redirect_seen["fired"] = True
         return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
 
     tokens = _run_connect_dance("cid", ["https://www.googleapis.com/auth/drive.appdata"],
                                 open_browser=fake_browser, exchange_transport=fake_exchange,
+                                on_redirect=lambda: redirect_seen.update(fired=True),
                                 timeout_s=10)
     print("  dance tokens:", sorted(tokens))
     assert tokens["refresh_token"] == "rt", "dance must return exchanged tokens"
+    assert redirect_seen["fired"] is True, "on_redirect must fire before the exchange"
 
     start = _time.monotonic()
     try:
