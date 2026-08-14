@@ -139,6 +139,18 @@ def main():
     db.delete(h)
     db.delete(c)
 
+    # --- FTS5: edge cases ---------------------------------------------
+    print("--- FTS5 edge cases:")
+    q1 = db.add("quoted", 'say "hello" world')
+    assert len(db.search('"hello"')) == 1, "embedded double quotes must not break MATCH"
+    assert len(db.search("hello")) == 1
+    assert len(db.search("ip")) >= 2, "all-short-term query must fall back to LIKE"
+    u = db.add("unicode", "ünïcode café")
+    assert len(db.search("ü")) == 1, "short and unicode terms must still match"
+    assert len(db.search("café")) == 1
+    db.delete(q1)
+    db.delete(u)
+
     # persistence: reopen
     db.close()
     db2 = Database(path)
