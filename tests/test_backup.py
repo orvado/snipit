@@ -1,6 +1,8 @@
 """Quick sanity tests for the SnipIt backup layer (no GUI, no network)."""
 import _sandbox  # noqa: F401  (must precede snipit imports)
 
+import base64  # noqa: E402
+import hashlib  # noqa: E402
 import sqlite3  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -13,6 +15,14 @@ from snipit.backup import (  # noqa: E402
     snapshot_db,
 )
 from snipit.db import Database  # noqa: E402
+from snipit.oauth import (  # noqa: E402
+    TokenStore,
+    build_authorize_url,
+    exchange_code,
+    make_code_challenge,
+    make_code_verifier,
+    refresh_access_token,
+)
 
 
 @dataclass
@@ -101,6 +111,38 @@ def main():
     db.close()
     assert not target.with_name(target.name + "-wal").exists(), \
         "no stale WAL may survive a clean close"
+
+    # --- OAuth PKCE helpers + token store ------------------------------
+    print("--- OAuth PKCE:")
+    verifier = make_code_verifier()
+    assert 43 <= len(verifier) <= 128
+    ch = make_code_challenge(verifier)
+    assert ch == base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+    url = build_authorize_url(
+        "cid", "http://127.0.0.1:8123/", "st8", verifier,
+        ["https://www.googleapis.com/auth/drive.appdata"])
+    assert "code_challenge=" + ch in url and "state=st8" in url \
+        and "access_type=offline" in url and "client_id=cid" in url
+    calls = []
+
+    def fake_post(url2, data, headers):
+        calls.append((url2, data, headers))
+        return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+
+    tok = exchange_code(fake_post, "thecode", verifier, "http://127.0.0.1:8123/", "cid")
+    assert tok["refresh_token"] == "rt"
+    assert b"grant_type=authorization_code" in calls[0][1]
+    assert b"code_verifier=" + verifier.encode() in calls[0][1]
+    tok2 = refresh_access_token(fake_post, "rt", "cid")
+    assert tok2["access_token"] == "at"
+    assert b"grant_type=refresh_token" in calls[-1][1]
+    ts = TokenStore(_sandbox.db_path("token.json"))
+    ts.save({"refresh_token": "rt", "access_token": "at", "expires_at": 0})
+    assert ts.load()["refresh_token"] == "rt"
+    assert TokenStore(_sandbox.db_path("missing.json")).load() == {}
+    print("  PKCE url:", url[:80], "…")
+
     print("BACKUP PRIMITIVES PASSED")
 
 
