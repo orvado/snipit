@@ -37,6 +37,9 @@ press **Enter** to copy, and the window gets out of your way.
   as-is; anything longer blocks Save with a message rather than being cut down
   behind your back.
 - **Single instance** — launching a second copy brings the running one forward.
+- **Cloud backup (optional)** — connect a Google account once and SnipIt can
+  push clean snapshots to the account's hidden per-app Drive folder and
+  restore the latest one. Zero infrastructure, zero cost; see below.
 
 ## Install
 
@@ -89,6 +92,39 @@ edit, and only deletes a snippet when the box is empty.
 Because the text is handed to the OS rather than lent out by Tk, it is still
 there after you quit SnipIt — and `Win+V` clipboard history picks it up.
 
+### Cloud backup
+
+Backups are snapshots taken with SQLite's `VACUUM INTO` (safe even while the
+app is running) and stored in a hidden per-app folder in **your own Google
+Drive** (`appDataFolder` — invisible to you, 15 GB free quota, and the app
+only gets a scope that reaches that folder, never your other Drive files).
+Manual for now: open the Cloud window (☁ button or tray → **Cloud…**) to
+connect, back up, and restore; tray → **Back up now…** is the quick path.
+The latest 10 backups are kept, locally and on the cloud.
+
+**One-time setup (free, ~5 minutes):**
+
+1. Go to <https://console.cloud.google.com> → create a project (or reuse one).
+2. **APIs & Services → OAuth consent screen**: External, add your own Google
+   account as a test user.
+3. **APIs & Services → Credentials → Create credentials → OAuth client ID**:
+   application type **Desktop app**.
+4. Copy the **Client ID** and set it before launching SnipIt:
+
+   ```powershell
+   $env:SNIPIT_GOOGLE_CLIENT_ID = "xxxxxxxx.apps.googleusercontent.com"
+   python -m snipit
+   ```
+
+   (or set `GOOGLE_CLIENT_ID` in `snipit/config.py`).
+
+5. Click **☁ → Connect…** and approve in the browser.
+
+Restoring replaces the current database — a safety snapshot of the pre-restore
+state is kept in the backups folder, and the confirm dialog shows you which
+backup you are about to restore. Disconnect (Cloud window) forgets the account
+and deletes the locally stored token.
+
 ## Configuration
 
 Environment variables:
@@ -97,6 +133,7 @@ Environment variables:
 | --- | --- | --- |
 | `SNIPIT_HOTKEY` | `ctrl+alt+s` | Global hotkey (`keyboard` library syntax, e.g. `ctrl+shift+space`) |
 | `SNIPIT_DATA_DIR` | `%APPDATA%` | Where `SnipIt\snipit.db` lives |
+| `SNIPIT_GOOGLE_CLIENT_ID` | *(empty = cloud disabled)* | Google OAuth client ID for cloud backup |
 
 Tweak `snipit/config.py` directly for `AUTO_CLOSE_MS`, `MAX_CONTENT_LEN`,
 `MAX_RESULTS`, `CLIPBOARD_CRLF`, etc.
@@ -109,6 +146,9 @@ keep longer snippets.
 ## Data
 
 - Database: `%APPDATA%\SnipIt\snipit.db` (plus `-wal` / `-shm` while running)
+- Cloud backups: `%APPDATA%\SnipIt\backups\` (local snapshots +
+  `pre_restore_*` safety snapshots); OAuth tokens: `cloud_token.json`
+  (deleted on Disconnect)
 - Schema: `snippets(id, heading, content, created_at, updated_at, last_used_at)`
   — `last_used_at` drives the MRU ordering (NULL = never used); content is
   `TEXT`; saves over `MAX_CONTENT_LEN` are refused, never truncated.
@@ -135,12 +175,16 @@ snipit/
     app.py         # wiring: db + ui + tray + hotkey + auto-close + IPC
     ui.py          # search window, detail dialog, add/edit dialog
     db.py          # SQLite CRUD + progressive search
+    backup.py      # VACUUM INTO snapshots + backup/restore orchestration
+    cloud.py       # Google Drive appDataFolder provider
+    oauth.py       # OAuth2 PKCE + token store (stdlib only)
     clipboard.py   # Win32 clipboard writes that outlive the process
     hotkey.py      # global hotkey (keyboard lib)
     tray.py        # system tray (pystray)
     config.py      # constants / data paths
   tests/           # smoke tests (no framework needed)
     _sandbox.py    # points the suite at a throwaway data dir
+    _fakes.py      # shared test doubles (in-memory cloud provider)
   launcher.py      # python launcher.py (also PyInstaller entry)
   run.ps1 / build.ps1 / requirements.txt
 ```

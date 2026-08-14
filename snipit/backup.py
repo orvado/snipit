@@ -105,15 +105,14 @@ class BackupStore:
         return dest
 
     def restore(self, live_db, open_factory) -> object:
-        """Replace the local DB with the newest verified backup.
+        """Convenience: prepare (worker-safe) then apply (main-thread only)."""
+        tmp = self.prepare_restore(live_db.path)
+        return self.apply_restore(live_db, tmp, open_factory)
 
-        Ordering matters: the safety snapshot and the download+verify both
-        happen while the live DB is still open, so any failure leaves it
-        untouched. Only after verification do we close, replace and reopen.
-        ``open_factory`` reopens the Database (its __init__ migrates old
-        schemas in place, so pre-FTS backups restore cleanly).
-        """
-        db_path = Path(live_db.path)
+    def prepare_restore(self, db_path: Path) -> Path:
+        """Safety snapshot + download + verify. Worker-thread safe: never
+        touches the live connection. Returns the verified temp file."""
+        db_path = Path(db_path)
         self._pre_restore_snapshot(db_path)
         tmp = db_path.with_name(f".restore_{uuid4().hex}.db")
         try:
@@ -121,8 +120,18 @@ class BackupStore:
         except Exception:
             tmp.unlink(missing_ok=True)
             raise
+        return tmp
+
+    def apply_restore(self, live_db, verified_tmp: Path, open_factory) -> object:
+        """Close, atomically replace, drop stale WAL, reopen.
+
+        Touches the live connection, so it must run on the UI thread only.
+        ``open_factory`` reopens the Database (its __init__ migrates old
+        schemas in place, so pre-FTS backups restore cleanly).
+        """
+        db_path = Path(live_db.path)
         live_db.close()
-        os.replace(tmp, db_path)                    # atomic, same volume
+        os.replace(verified_tmp, db_path)            # atomic, same volume
         for suffix in ("-wal", "-shm"):
             Path(str(db_path) + suffix).unlink(missing_ok=True)
         return open_factory(db_path)

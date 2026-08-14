@@ -1,12 +1,21 @@
 """Headless-ish UI smoke test: builds the real window, exercises search,
 copy + auto-hide scheduling, then tears everything down."""
 import _sandbox  # noqa: F401  (must precede snipit imports)
+from _fakes import FakeCloud  # noqa: E402
 
-import tkinter as tk
+import tkinter as tk  # noqa: E402
+from pathlib import Path  # noqa: E402
 
+from snipit.backup import BackupStore  # noqa: E402
 from snipit.config import MAX_CONTENT_LEN  # noqa: E402
 from snipit.db import Database  # noqa: E402
-from snipit.ui import SearchWindow, EditWindow, DetailWindow, _looks_like_code  # noqa: E402
+from snipit.ui import (  # noqa: E402
+    CloudWindow,
+    DetailWindow,
+    EditWindow,
+    SearchWindow,
+    _looks_like_code,
+)
 
 
 def main():
@@ -26,6 +35,7 @@ def main():
         "delete": lambda: None,
         "escape": lambda: None,
         "hide": lambda: root.withdraw(),
+        "cloud": lambda: None,
     })
 
     root.update()  # force widget geometry so width math runs
@@ -104,6 +114,34 @@ def main():
     print("after trimming, save button:", ew2._save_btn.cget("state"))
     assert str(ew2._save_btn.cget("state")) == "normal"
     ew2.destroy()
+
+    # cloud window: fake provider, backup click, list rendering
+    cloud = FakeCloud()
+    store = BackupStore(cloud, Path(db.path), Path(_sandbox.db_path("backups")), keep=3)
+    win = CloudWindow(root, actions={
+        "connect": lambda: None,
+        "disconnect": lambda: None,
+        "backup": lambda: store.backup(),
+        "restore": lambda: None,
+    }, provider=cloud, store=store)
+    root.update()
+    print("cloud status:", repr(win.status_lbl.cget("text")))
+    assert "Connected" in win.status_lbl.cget("text")
+    assert str(win.connect_btn.cget("state")) == "disabled", \
+        "connect must be disabled once connected"
+    win.actions["backup"]()
+    root.update()
+    assert any(p.name.startswith("snipit_backup_")
+               for p in Path(_sandbox.db_path("backups")).glob("snipit_backup_*.db")), \
+        "backup action must produce a local snapshot"
+    win.set_backups(store.list_backups())
+    root.update()
+    print("backup list size:", win.backup_list.size())
+    assert win.backup_list.size() >= 1
+    assert win.selected_backup() == "", "nothing selected yet"
+    win.backup_list.selection_set(0)
+    assert win.selected_backup().startswith("snipit_backup_")
+    win.destroy()
 
     root.destroy()
     db.close()

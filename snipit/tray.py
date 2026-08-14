@@ -23,10 +23,13 @@ class TrayIcon:
     """Runs a pystray icon in a daemon thread. Callbacks are forwarded to the
     caller as-is, so they should marshal onto the UI thread if needed."""
 
-    def __init__(self, show_callback, new_callback, quit_callback):
+    def __init__(self, show_callback, new_callback, quit_callback,
+                 cloud_callback, backup_callback):
         menu = pystray.Menu(
             pystray.MenuItem("Show SnipIt", lambda: show_callback(), default=True),
             pystray.MenuItem("New snippet…", lambda: new_callback()),
+            pystray.MenuItem("Back up now…", lambda: backup_callback()),
+            pystray.MenuItem("Cloud…", lambda: cloud_callback()),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", lambda: quit_callback()),
         )

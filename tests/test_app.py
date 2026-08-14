@@ -35,13 +35,33 @@ def main():
         app.on_escape()
         results["cancelled"] = app._auto_hide_job is None
 
+    def step_cloud_restore():
+        # drive backup + restore through the real App with a fake provider
+        from pathlib import Path
+        from snipit.backup import BackupStore
+        from _fakes import FakeCloud
+
+        cloud = FakeCloud()
+        app.backup_store = BackupStore(cloud, Path(app.db.path),
+                                       Path(_sandbox.db_path("backups")), keep=3)
+        app.cloud_provider = cloud
+        before = app.db.count()
+        app.backup_store.backup()
+        app.db.add("cloud-restore-probe", "unique probe content")
+        tmp = app.backup_store.prepare_restore(app.db.path)
+        app._apply_restore(tmp)
+        results["restored"] = (app.db.count() == before
+                               and not app.db.search("cloud-restore-probe"))
+        results["ui_refreshed"] = app.ui.listbox.size() == app.db.count()
+
     def step_quit():
         results["viewable"] = root.state() != "withdrawn"
         app.quit()
 
     root.after(600, step_show_copy)
     root.after(1300, step_escape_cancel)
-    root.after(2200, step_quit)
+    root.after(2200, step_cloud_restore)
+    root.after(3100, step_quit)
 
     first_content = app.db.search("")[0]["content"]
     rc = app.run()
@@ -51,6 +71,9 @@ def main():
     assert results.get("cancelled") is True, "Esc should cancel auto-hide"
     assert results.get("viewable") is True, "window should still be visible after cancel"
     assert results.get("clipboard") == first_content, "clipboard should hold the copied snippet"
+    assert results.get("restored") is True, \
+        "restore must swap in the snapshot and drop post-backup edits"
+    assert results.get("ui_refreshed") is True, "ui must re-render against the restored db"
     print("APP SMOKE TEST PASSED")
 
 

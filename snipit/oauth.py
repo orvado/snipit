@@ -75,6 +75,20 @@ def refresh_access_token(transport, refresh_token: str, client_id: str) -> dict:
     })
 
 
+def parse_redirect(query_string: str, expected_state: str) -> str:
+    """Extract the authorization code from the loopback redirect, checking
+    the OAuth state to block CSRF. Raises ValueError on mismatch/absence."""
+    params = urllib.parse.parse_qs(query_string)
+    if params.get("state", [""])[0] != expected_state:
+        raise ValueError("OAuth state mismatch — aborting connect")
+    if "error" in params:
+        raise ValueError(f"authorization failed: {params['error'][0]}")
+    code = params.get("code", [""])[0]
+    if not code:
+        raise ValueError("no authorization code in redirect")
+    return code
+
+
 class TokenStore:
     """Persists OAuth tokens as JSON in the app data dir."""
 

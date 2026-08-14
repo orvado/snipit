@@ -2,18 +2,34 @@
 from __future__ import annotations
 
 import queue
+import secrets
 import socket
 import sys
 import threading
+import time
 import tkinter as tk
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from tkinter import messagebox
+from urllib.parse import urlparse
 
 from . import clipboard, config
+from .backup import BackupStore
+from .cloud import GoogleDriveProvider
 from .config import APP_NAME, APP_VERSION, AUTO_CLOSE_MS
 from .db import Database
 from .hotkey import Hotkey
+from .oauth import (
+    TokenStore,
+    build_authorize_url,
+    exchange_code,
+    make_code_verifier,
+    parse_redirect,
+    refresh_access_token,
+)
 from .tray import TrayIcon
-from .ui import DetailWindow, EditWindow, SearchWindow
+from .ui import CloudWindow, DetailWindow, EditWindow, SearchWindow
+from .ui import DANGER, NOTICE, OK
 
 
 class App:
@@ -33,14 +49,21 @@ class App:
             "delete": self.delete_selected,
             "escape": self.on_escape,
             "hide": self.hide,
+            "cloud": self.open_cloud,
         })
         self.detail = None
         self._auto_hide_job = None
+        self._cloud_win = None
+        self._connecting = False
+        self.cloud_provider = None
+        self.backup_store = None
+        self._restore_cloud_session()
 
     # ------------------------------------------------------------- run/quit
     def run(self) -> int:
         self._start_ipc_thread()
-        self.tray = TrayIcon(self._tray_show, self._tray_new, self._tray_quit)
+        self.tray = TrayIcon(self._tray_show, self._tray_new, self._tray_quit,
+                             self._tray_cloud, self._tray_backup)
         self.tray.start()
         self.hotkey = Hotkey(config.DEFAULT_HOTKEY, self._hotkey_pressed,
                              error_callback=self._hotkey_error)
@@ -202,6 +225,205 @@ class App:
             self.detail.destroy()
             self.detail = None
 
+    # ------------------------------------------------------------- cloud
+    def _restore_cloud_session(self) -> None:
+        """Re-attach to a previously connected account (no UI side effects)."""
+        if not config.GOOGLE_CLIENT_ID:
+            return
+        tok = TokenStore(config.cloud_token_path()).load()
+        if tok.get("refresh_token"):
+            self._attach_cloud(GoogleDriveProvider(
+                config.GOOGLE_CLIENT_ID, self._cloud_token_getter()))
+
+    def _attach_cloud(self, provider) -> None:
+        self.cloud_provider = provider
+        self.backup_store = BackupStore(provider, config.db_path(), config.backups_dir())
+
+    def _cloud_token_getter(self):
+        """Returns a callable yielding a fresh access token, refreshing as
+        needed from the stored refresh token."""
+        store = TokenStore(config.cloud_token_path())
+        cid = config.GOOGLE_CLIENT_ID
+
+        def getter() -> str:
+            tok = store.load()
+            if not tok.get("refresh_token"):
+                raise RuntimeError("cloud not connected")
+            if tok.get("access_token") and tok.get("expires_at", 0) > time.time() + 60:
+                return tok["access_token"]
+            fresh = refresh_access_token(None, tok["refresh_token"], cid)
+            fresh["refresh_token"] = tok["refresh_token"]  # refresh may omit it
+            fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600)
+            store.save(fresh)
+            return fresh["access_token"]
+
+        return getter
+
+    def open_cloud(self) -> None:
+        if self._cloud_win is not None and self._cloud_win.winfo_exists():
+            self._cloud_win.lift()
+            return
+        self._ensure_visible()
+        self._cloud_win = CloudWindow(self.root, actions={
+            "connect": self.connect_cloud,
+            "disconnect": self.disconnect_cloud,
+            "backup": self.backup_now,
+            "restore": self.restore_cloud,
+        }, provider=self.cloud_provider, store=self.backup_store)
+        self._cloud_list()
+
+    def _cloud_list(self) -> None:
+        store, win = self.backup_store, self._cloud_win
+        if store is None or win is None or not win.winfo_exists():
+            return
+
+        def work() -> None:
+            try:
+                metas = store.list_backups()
+            except Exception as exc:
+                self._queue.put(lambda: self._cloud_error(f"list failed: {exc}"))
+                return
+            self._queue.put(lambda: win.set_backups(metas))
+
+        threading.Thread(target=work, daemon=True, name="snipit-cloud-list").start()
+
+    def _cloud_error(self, msg: str) -> None:
+        self.ui.notify(msg, color=DANGER)
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_status(msg)
+
+    def connect_cloud(self) -> None:
+        if self._connecting:
+            self.ui.notify("Sign-in already in progress…", color=NOTICE)
+            return
+        if not config.GOOGLE_CLIENT_ID:
+            self.ui.notify("Cloud not configured — set SNIPIT_GOOGLE_CLIENT_ID "
+                           "(see README)", color=NOTICE)
+            return
+        self._connecting = True
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_status("Waiting for browser sign-in…")
+
+        def work() -> None:
+            try:
+                tokens = _run_connect_dance(config.GOOGLE_CLIENT_ID, config.CLOUD_SCOPES)
+                TokenStore(config.cloud_token_path()).save(tokens)
+            except Exception as exc:
+                self._queue.put(lambda: self._connect_failed(str(exc)))
+                return
+            self._queue.put(self._cloud_connected)
+
+        threading.Thread(target=work, daemon=True, name="snipit-cloud-connect").start()
+
+    def _connect_failed(self, msg: str) -> None:
+        self._connecting = False
+        self._cloud_error(f"connect failed: {msg}")
+
+    def _cloud_connected(self) -> None:
+        self._connecting = False
+        self._attach_cloud(GoogleDriveProvider(
+            config.GOOGLE_CLIENT_ID, self._cloud_token_getter()))
+        self.ui.notify("Cloud connected ✓", color=OK)
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.attach(self.cloud_provider, self.backup_store)
+            self._cloud_list()
+
+    def disconnect_cloud(self) -> None:
+        try:
+            config.cloud_token_path().unlink(missing_ok=True)
+        except OSError:
+            pass
+        self.cloud_provider = None
+        self.backup_store = None
+        self.ui.notify("Cloud disconnected", color=NOTICE)
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.attach(None, None)
+            win.set_backups([])
+
+    def backup_now(self) -> None:
+        store = self.backup_store
+        if store is None:
+            self.ui.notify("Cloud not connected", color=NOTICE)
+            return
+
+        def work() -> None:
+            try:
+                name = store.backup()
+            except Exception as exc:
+                self._queue.put(lambda: self._cloud_error(f"backup failed: {exc}"))
+                return
+            self._queue.put(lambda: self._backup_done(name))
+
+        threading.Thread(target=work, daemon=True, name="snipit-cloud-backup").start()
+
+    def _backup_done(self, name: str) -> None:
+        self.ui.notify("Backed up to cloud ✓", color=OK)
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_status(f"Backed up — {name}")
+            self._cloud_list()
+
+    def restore_cloud(self) -> None:
+        win = self._cloud_win
+        name = win.selected_backup() if win is not None else ""
+        if not name:
+            self.ui.notify("Select a backup to restore", color=NOTICE)
+            return
+        if not messagebox.askyesno(
+                APP_NAME,
+                f"Restore “{name}”?\n\nLocal changes made after this backup "
+                "will be lost.\nA safety snapshot of the current database is "
+                "kept in the backups folder.",
+                parent=self.root):
+            return
+        store = self.backup_store
+        db_path = self.db.path
+
+        def work() -> None:
+            try:
+                tmp = store.prepare_restore(db_path)
+            except Exception as exc:
+                self._queue.put(lambda: self._restore_failed(str(exc)))
+                return
+            self._queue.put(lambda: self._apply_restore(tmp))
+
+        threading.Thread(target=work, daemon=True, name="snipit-cloud-restore").start()
+
+    def _restore_failed(self, msg: str) -> None:
+        self.ui.notify(f"Restore failed: {msg}", color=DANGER)
+        # Make sure a working Database is attached no matter what.
+        try:
+            self.db.close()
+        except Exception:
+            pass
+        self.db = Database(config.db_path())
+        self.ui.db = self.db
+        self.ui.refresh()
+
+    def _apply_restore(self, tmp) -> None:
+        try:
+            new_db = self.backup_store.apply_restore(
+                self.db, tmp, open_factory=Database)
+        except Exception as exc:
+            tmp.unlink(missing_ok=True)
+            self._restore_failed(str(exc))
+            return
+        self._finish_restore(new_db)
+
+    def _finish_restore(self, new_db) -> None:
+        self.db = new_db
+        self.ui.db = new_db
+        self.ui.refresh()
+        self.ui.notify("Restored from cloud backup ✓", color=OK)
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_status("Restored from cloud backup ✓")
+            self._cloud_list()
+
     # ------------------------------------------------------------- tray/hotkey
     def _tray_show(self) -> None:
         self._queue.put(self.show)
@@ -211,6 +433,12 @@ class App:
 
     def _tray_quit(self) -> None:
         self._queue.put(self.quit)
+
+    def _tray_cloud(self) -> None:
+        self._queue.put(self.open_cloud)
+
+    def _tray_backup(self) -> None:
+        self._queue.put(self.backup_now)
 
     def _hotkey_pressed(self) -> None:
         self._queue.put(self.toggle)
@@ -252,6 +480,56 @@ class App:
 
 
 # ---------------------------------------------------------------- entry point
+def _free_port() -> int:
+    """Pick a free loopback port for the OAuth redirect server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _run_connect_dance(client_id: str, scopes: list[str],
+                       open_browser=webbrowser.open,
+                       timeout_s: float = 120.0) -> dict:
+    """OAuth authorize-in-browser dance: bind the loopback server, open the
+    browser, wait for the redirect, exchange the code. Returns tokens."""
+    verifier = make_code_verifier()
+    state = secrets.token_urlsafe(16)
+    port = _free_port()
+    redirect_uri = f"http://127.0.0.1:{port}/"
+    url = build_authorize_url(client_id, redirect_uri, state, verifier, scopes)
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            try:
+                code = parse_redirect(urlparse(self.path).query, state)
+            except ValueError:
+                self.send_error(400, "OAuth state mismatch")
+                return
+            self.server.auth_code = code
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(
+                "<h2>SnipIt</h2><p>Signed in — you can close this window.</p>"
+                .encode("utf-8"))
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", port), _Handler)  # binds now
+    server.auth_code = None
+    try:
+        open_browser(url)
+        deadline = time.monotonic() + timeout_s
+        while server.auth_code is None and time.monotonic() < deadline:
+            server.handle_request()
+        if server.auth_code is None:
+            raise TimeoutError("sign-in timed out — try again")
+        return exchange_code(None, server.auth_code, verifier, redirect_uri, client_id)
+    finally:
+        server.server_close()
+
+
 def _try_bind_ipc():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:

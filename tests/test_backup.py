@@ -1,16 +1,15 @@
 """Quick sanity tests for the SnipIt backup layer (no GUI, no network)."""
 import _sandbox  # noqa: F401  (must precede snipit imports)
+from _fakes import FakeCloud  # noqa: E402
 
 import base64  # noqa: E402
 import hashlib  # noqa: E402
 import sqlite3  # noqa: E402
-from dataclasses import dataclass  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from snipit.backup import (  # noqa: E402
     BackupMeta,
     BackupStore,
-    CloudProvider,
     prune_backups,
     snapshot_db,
 )
@@ -21,38 +20,9 @@ from snipit.oauth import (  # noqa: E402
     exchange_code,
     make_code_challenge,
     make_code_verifier,
+    parse_redirect,
     refresh_access_token,
 )
-
-
-@dataclass
-class FakeCloud(CloudProvider):
-    """In-memory provider; also records every call for assertions."""
-
-    files: dict = None
-    calls: list = None
-
-    def __post_init__(self):
-        self.files = {} if self.files is None else self.files
-        self.calls = [] if self.calls is None else self.calls
-
-    def upload(self, name: str, path: Path) -> None:
-        self.calls.append(("upload", name))
-        self.files[name] = path.read_bytes()
-
-    def download(self, name: str, dest: Path) -> None:
-        self.calls.append(("download", name))
-        dest.write_bytes(self.files[name])
-
-    def delete(self, name: str) -> None:
-        self.calls.append(("delete", name))
-        self.files.pop(name, None)
-
-    def list(self) -> list[BackupMeta]:
-        # created_at mirrors the name so ordering is deterministic (names
-        # are timestamps, newest sorts last in ascending order).
-        return [BackupMeta(n, n, len(b), id=n)
-                for n, b in sorted(self.files.items())]
 
 
 def main():
@@ -142,6 +112,26 @@ def main():
     assert ts.load()["refresh_token"] == "rt"
     assert TokenStore(_sandbox.db_path("missing.json")).load() == {}
     print("  PKCE url:", url[:80], "…")
+
+    # --- OAuth redirect parsing ----------------------------------------
+    print("--- OAuth redirect parsing:")
+    assert parse_redirect("code=abc&state=st8", "st8") == "abc"
+    try:
+        parse_redirect("code=abc&state=WRONG", "st8")
+        raise AssertionError("wrong state must raise")
+    except ValueError:
+        pass
+    try:
+        parse_redirect("error=access_denied&state=st8", "st8")
+        raise AssertionError("error param must raise")
+    except ValueError:
+        pass
+    try:
+        parse_redirect("state=st8", "st8")
+        raise AssertionError("missing code must raise")
+    except ValueError:
+        pass
+    print("  state/error/code checks ok")
 
     # --- GoogleDriveProvider request shapes ----------------------------
     print("--- GoogleDriveProvider:")

@@ -128,6 +128,13 @@ class SearchWindow:
         )
         self.clear_btn.pack(side="left", padx=(4, 0))
 
+        self.cloud_btn = tk.Button(
+            top, text="☁", command=self.actions["cloud"], relief="flat", bg=BG,
+            activebackground=BORDER, fg=MUTED, activeforeground=FG,
+            font=BODY_FONT, cursor="hand2", width=3,
+        )
+        self.cloud_btn.pack(side="left", padx=(4, 0))
+
         self.add_btn = tk.Button(
             top, text="＋ Add", command=self.actions["add"], relief="flat",
             bg=ACCENT, fg=WHITE, activebackground=ACCENT_D, activeforeground=WHITE,
@@ -399,6 +406,117 @@ class DetailWindow(tk.Toplevel):
         x = max(0, px + (pw - w) // 2)
         y = max(0, py + (ph - h) // 2)
         self.geometry(f"+{x}+{y}")
+
+# ================================================================ CloudWindow
+class CloudWindow(tk.Toplevel):
+    """Backup/restore control: connect state, back up now, restore list.
+
+    The window itself does no network work — the app fetches the backup
+    list and pushes it in via set_backups().
+    """
+
+    def __init__(self, root: tk.Tk, actions: dict, provider=None, store=None):
+        super().__init__(root)
+        self.actions = actions
+        self.provider = provider
+        self.store = store
+        self.title("Cloud backup")
+        self.configure(bg=BG)
+        self.transient(root)
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self._build()
+        self._center_over(root)
+        self.grab_set()
+
+    def _build(self) -> None:
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+
+        self.status_lbl = tk.Label(body, text="", bg=BG, fg=FG, anchor="w",
+                                   font=BODY_FONT, wraplength=340, justify="left")
+        self.status_lbl.pack(fill="x")
+
+        btns = tk.Frame(body, bg=BG)
+        btns.pack(fill="x", pady=(10, 0))
+        self.connect_btn = tk.Button(
+            btns, text="Connect…", command=self.actions["connect"], relief="flat",
+            bg=ACCENT, fg=WHITE, activebackground=ACCENT_D, activeforeground=WHITE,
+            font=BODY_FONT, cursor="hand2", padx=10,
+        )
+        self.connect_btn.pack(side="left")
+        self.disconnect_btn = tk.Button(
+            btns, text="Disconnect", command=self.actions["disconnect"], relief="flat",
+            bg=BG, fg=MUTED, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=10,
+        )
+        self.disconnect_btn.pack(side="left", padx=(6, 0))
+        self.backup_btn = tk.Button(
+            btns, text="Back up now", command=self.actions["backup"], relief="flat",
+            bg=BG, fg=FG, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=10,
+        )
+        self.backup_btn.pack(side="left", padx=(6, 0))
+        self.restore_btn = tk.Button(
+            btns, text="Restore selected", command=self.actions["restore"], relief="flat",
+            bg=BG, fg=DANGER, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=10,
+        )
+        self.restore_btn.pack(side="left", padx=(6, 0))
+
+        list_frame = tk.Frame(body, bg=WHITE, highlightthickness=1,
+                              highlightbackground=BORDER)
+        list_frame.pack(fill="both", expand=True, pady=(10, 0))
+        self.backup_list = tk.Listbox(
+            list_frame, activestyle="none", borderwidth=0, highlightthickness=0,
+            bg=WHITE, fg=FG, font=LIST_FONT, selectbackground=SELECT,
+            selectforeground=FG_SELECT, exportselection=False,
+        )
+        scroll = tk.Scrollbar(list_frame, orient="vertical", command=self.backup_list.yview)
+        self.backup_list.configure(yscrollcommand=scroll.set)
+        self.backup_list.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self._refresh_state()
+
+    def attach(self, provider, store) -> None:
+        """Update the connected provider/store and re-render button state."""
+        self.provider = provider
+        self.store = store
+        self._refresh_state()
+
+    def _refresh_state(self) -> None:
+        connected = self.provider is not None and self.store is not None
+        self.connect_btn.config(state="disabled" if connected else "normal")
+        self.disconnect_btn.config(state="normal" if connected else "disabled")
+        self.backup_btn.config(state="normal" if connected else "disabled")
+        self.restore_btn.config(state="normal" if connected else "disabled")
+        self.set_status(
+            "Connected — cloud backup ready" if connected
+            else "Not connected — connect with your Google account")
+
+    def set_status(self, text: str, color: str = FG) -> None:
+        self.status_lbl.config(text=text, fg=color)
+
+    def set_backups(self, metas) -> None:
+        self.backup_list.delete(0, "end")
+        for m in metas:
+            self.backup_list.insert("end", f"{m.name}   ({m.size:,} B)")
+
+    def selected_backup(self) -> str:
+        sel = self.backup_list.curselection()
+        if not sel:
+            return ""
+        return self.backup_list.get(sel[0]).split("   ")[0]
+
+    def _center_over(self, parent) -> None:
+        self.update_idletasks()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
+        x = max(0, px + (pw - w) // 2)
+        y = max(0, py + (ph - h) // 2)
+        self.geometry(f"+{x}+{y}")
+
 
 # ================================================================ EditWindow
 class EditWindow(tk.Toplevel):
