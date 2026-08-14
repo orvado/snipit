@@ -41,6 +41,21 @@ WINDOW_WIDTH = 720
 WINDOW_HEIGHT = 420
 MARGIN_TOP = 140
 
+# Cloud backup (optional). Empty client id disables the feature; register a
+# free Google Cloud OAuth "Desktop app" client and put its id here or in
+# SNIPIT_GOOGLE_CLIENT_ID. The scope is the hidden per-app Drive folder only.
+GOOGLE_CLIENT_ID = os.environ.get("SNIPIT_GOOGLE_CLIENT_ID", "")
+CLOUD_SCOPES = ["https://www.googleapis.com/auth/drive.appdata"]
+MAX_BACKUPS = 10
+
+
+def backups_dir() -> Path:
+    return data_dir() / "backups"
+
+
+def cloud_token_path() -> Path:
+    return data_dir() / "cloud_token.json"
+
 
 def data_dir() -> Path:
     base = os.environ.get("SNIPIT_DATA_DIR")
