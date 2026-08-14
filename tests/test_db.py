@@ -41,6 +41,7 @@ def main():
     rows = db.search("mru")
     print("  initial:", [(r["id"], r["heading"]) for r in rows if r["id"] in (a, b)])
     assert rows[0]["id"] == b, "before any use, newest addition sorts first"
+    time.sleep(0.01)  # last_used_at has ms precision; stay out of a tie
     db.mark_used(a)
     rows = db.search("mru")
     assert rows[0]["id"] == a, "a used snippet sorts above unused ones"
@@ -78,6 +79,23 @@ def main():
     assert db3.count() == 1, "migration must not seed an existing database"
     db3.close()
     print("--- migration ok, column:", sorted(cols))
+
+    # --- FTS5: virtual table exists and stays in sync -----------------
+    print("--- FTS5 sync:")
+    fts_count = db.conn.execute("SELECT count(*) FROM snippets_fts").fetchone()[0]
+    assert fts_count == db.count(), "FTS table must mirror snippets"
+    sid = db.add("fts sync", "unique fts token abc")
+    assert db.conn.execute(
+        "SELECT content FROM snippets_fts WHERE rowid=?", (sid,)
+    ).fetchone()[0] == "unique fts token abc"
+    db.update(sid, "fts sync", "changed fts token xyz")
+    assert db.conn.execute(
+        "SELECT content FROM snippets_fts WHERE rowid=?", (sid,)
+    ).fetchone()[0] == "changed fts token xyz"
+    db.delete(sid)
+    assert db.conn.execute(
+        "SELECT count(*) FROM snippets_fts WHERE rowid=?", (sid,)
+    ).fetchone()[0] == 0
 
     # persistence: reopen
     db.close()

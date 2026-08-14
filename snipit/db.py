@@ -14,6 +14,26 @@ CREATE TABLE IF NOT EXISTS snippets (
     updated_at   TEXT NOT NULL,
     last_used_at TEXT
 );
+
+-- FTS5 mirror for ranked search. Trigram tokenizer (not unicode61): it does
+-- real substring matching, which is what code snippets need ("ipconfig /all"
+-- must match a query for "ip config"). Triggers keep it in sync; the rowid
+-- maps 1:1 to snippets.id.
+CREATE VIRTUAL TABLE IF NOT EXISTS snippets_fts USING fts5(
+    heading, content, tokenize='trigram'
+);
+CREATE TRIGGER IF NOT EXISTS snippets_ai AFTER INSERT ON snippets BEGIN
+    INSERT INTO snippets_fts(rowid, heading, content)
+    VALUES (new.id, new.heading, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS snippets_ad AFTER DELETE ON snippets BEGIN
+    DELETE FROM snippets_fts WHERE rowid = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS snippets_au AFTER UPDATE ON snippets BEGIN
+    DELETE FROM snippets_fts WHERE rowid = old.id;
+    INSERT INTO snippets_fts(rowid, heading, content)
+    VALUES (new.id, new.heading, new.content);
+END;
 """
 
 SEED_SNIPPETS = [
