@@ -63,8 +63,11 @@ class Database:
         self.conn = sqlite3.connect(self.path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
+        # Snapshot pre-schema tables so _migrate knows what SCHEMA just created.
+        existing = {r["name"] for r in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
         self.conn.executescript(SCHEMA)
-        self._migrate()
+        self._migrate(existing)
         self.conn.commit()
         self.first_run = self.count() == 0
         if self.first_run:
@@ -72,8 +75,12 @@ class Database:
                 self.add(heading, content)
 
     # ------------------------------------------------------------------ query
-    def _migrate(self) -> None:
+    def _migrate(self, existing: set) -> None:
         """Bring older databases up to the current schema (idempotent).
+
+        ``existing`` is the set of tables present *before* SCHEMA ran, so a
+        table SCHEMA just created (like ``snippets_fts``) can be detected
+        and populated from pre-existing rows.
 
         Databases created before MRU tracking have no ``last_used_at``
         column. The last edit time is the best available proxy for usage
@@ -81,8 +88,18 @@ class Database:
         sensible initial order.
         """
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(snippets)")}
-        if "last_used_at" not in cols:
+        needs_mru = "last_used_at" not in cols
+        if needs_mru:
             self.conn.execute("ALTER TABLE snippets ADD COLUMN last_used_at TEXT")
+        if "snippets_fts" not in existing:
+            # Backfill BEFORE any UPDATE on snippets: the AFTER UPDATE
+            # trigger re-inserts rows into snippets_fts, so a backfill after
+            # it would duplicate rowids and hit the uniqueness constraint.
+            self.conn.execute(
+                "INSERT INTO snippets_fts(rowid, heading, content) "
+                "SELECT id, heading, content FROM snippets"
+            )
+        if needs_mru:
             self.conn.execute(
                 "UPDATE snippets SET last_used_at = updated_at "
                 "WHERE last_used_at IS NULL"

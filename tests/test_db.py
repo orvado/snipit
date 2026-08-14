@@ -97,6 +97,27 @@ def main():
         "SELECT count(*) FROM snippets_fts WHERE rowid=?", (sid,)
     ).fetchone()[0] == 0
 
+    # --- FTS5: legacy database is backfilled --------------------------
+    print("--- FTS5 migration backfill:")
+    legacy2 = _sandbox.db_path("legacy2.db")
+    conn = sqlite3.connect(legacy2)
+    conn.executescript(
+        "CREATE TABLE snippets (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "heading TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT);"
+        "INSERT INTO snippets (heading, content, created_at, updated_at) "
+        "VALUES ('legacy', 'old data xyz', '2024-01-01T00:00:00', '2024-06-01T00:00:00');"
+    )
+    conn.commit()
+    conn.close()
+    db4 = Database(legacy2)
+    n = db4.conn.execute("SELECT count(*) FROM snippets_fts").fetchone()[0]
+    assert n == db4.count(), "FTS must be backfilled on migration"
+    assert db4.conn.execute(
+        "SELECT content FROM snippets_fts WHERE rowid=1"
+    ).fetchone()[0] == "old data xyz"
+    db4.close()
+
     # persistence: reopen
     db.close()
     db2 = Database(path)
