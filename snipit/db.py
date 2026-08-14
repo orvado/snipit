@@ -7,11 +7,12 @@ from pathlib import Path
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS snippets (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    heading    TEXT NOT NULL DEFAULT '',
-    content    TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    heading      TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    last_used_at TEXT
 );
 """
 
@@ -29,8 +30,8 @@ SEED_SNIPPETS = [
 ]
 
 
-def _now() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+def _now(timespec: str = "seconds") -> str:
+    return datetime.now().isoformat(timespec=timespec)
 
 
 class Database:
@@ -43,6 +44,7 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
         self.first_run = self.count() == 0
         if self.first_run:
@@ -50,18 +52,41 @@ class Database:
                 self.add(heading, content)
 
     # ------------------------------------------------------------------ query
+    def _migrate(self) -> None:
+        """Bring older databases up to the current schema (idempotent).
+
+        Databases created before MRU tracking have no ``last_used_at``
+        column. The last edit time is the best available proxy for usage
+        recency, so it is backfilled once to give existing snippets a
+        sensible initial order.
+        """
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(snippets)")}
+        if "last_used_at" not in cols:
+            self.conn.execute("ALTER TABLE snippets ADD COLUMN last_used_at TEXT")
+            self.conn.execute(
+                "UPDATE snippets SET last_used_at = updated_at "
+                "WHERE last_used_at IS NULL"
+            )
+
     @staticmethod
     def _like(term: str) -> str:
         escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return f"%{escaped}%"
 
+    # NULL (never used) sorts last under DESC, so used snippets come first.
+    _MRU_ORDER = "ORDER BY last_used_at DESC, updated_at DESC, id DESC"
+
     def search(self, query: str, limit: int = 300):
         """Progressive search: all whitespace-separated terms must match the
-        heading or the content (case-insensitive, AND semantics)."""
+        heading or the content (case-insensitive, AND semantics).
+
+        Results are ordered most-recently-used first; never-used snippets
+        sort below them by last edit, then newest id.
+        """
         terms = [t.strip().lower() for t in query.split() if t.strip()]
         if not terms:
             return self.conn.execute(
-                "SELECT * FROM snippets ORDER BY lower(heading), id LIMIT ?", (limit,)
+                f"SELECT * FROM snippets {self._MRU_ORDER} LIMIT ?", (limit,)
             ).fetchall()
 
         clauses, params = [], []
@@ -74,7 +99,7 @@ class Database:
         sql = (
             "SELECT * FROM snippets WHERE "
             + " AND ".join(clauses)
-            + " ORDER BY lower(heading), id LIMIT ?"
+            + f" {self._MRU_ORDER} LIMIT ?"
         )
         return self.conn.execute(sql, params + [limit]).fetchall()
 
@@ -87,12 +112,25 @@ class Database:
     # ------------------------------------------------------------------ CRUD
     def add(self, heading: str, content: str) -> int:
         now = _now()
+        # A freshly added snippet counts as "just used" so it surfaces at the
+        # top of the MRU list until something else is copied.
         cur = self.conn.execute(
-            "INSERT INTO snippets (heading, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (heading, content, now, now),
+            "INSERT INTO snippets (heading, content, created_at, updated_at, "
+            "last_used_at) VALUES (?, ?, ?, ?, ?)",
+            (heading, content, now, now, _now("milliseconds")),
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def mark_used(self, sid: int) -> None:
+        """Record that a snippet was used (copied or viewed) — drives the
+        MRU ordering of search results. Millisecond precision so rapid
+        consecutive uses don't tie."""
+        self.conn.execute(
+            "UPDATE snippets SET last_used_at=? WHERE id=?",
+            (_now("milliseconds"), sid),
+        )
+        self.conn.commit()
 
     def update(self, sid: int, heading: str, content: str) -> None:
         self.conn.execute(

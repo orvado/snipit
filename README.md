@@ -26,6 +26,10 @@ press **Enter** to copy, and the window gets out of your way.
   view with Copy / Edit / Delete. Code-ish snippets render in a monospace font.
 - **Add / edit / delete** — `Ctrl+N`, `Ctrl+E`, `Ctrl+Del`; or the tray menu.
 - **SQLite storage** — one small `.db` file in `%APPDATA%\SnipIt\`.
+- **MRU results** — search results are ordered most-recently-used first:
+  copying a snippet (or viewing it in the detail window) brings it to the
+  top of the list; newly added snippets start at the top until something
+  else is used.
 - **Nothing is trimmed silently** — content up to **32,768 characters** saves
   as-is; anything longer blocks Save with a message rather than being cut down
   behind your back.
@@ -102,8 +106,11 @@ keep longer snippets.
 ## Data
 
 - Database: `%APPDATA%\SnipIt\snipit.db` (plus `-wal` / `-shm` while running)
-- Schema: `snippets(id, heading, content, created_at, updated_at)` — content is
+- Schema: `snippets(id, heading, content, created_at, updated_at, last_used_at)`
+  — `last_used_at` drives the MRU ordering (NULL = never used); content is
   `TEXT`; saves over `MAX_CONTENT_LEN` are refused, never truncated.
+  Existing databases are migrated automatically on first run (the column is
+  added and backfilled from `updated_at`).
 - Delete the files (or use `--reset-db`, which also clears a stale `-wal`) to
   start over. Quit SnipIt from the tray first — it holds the database open.
 

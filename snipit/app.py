@@ -109,6 +109,8 @@ class App:
         # Hands the text to Win32 so it outlives SnipIt; falls back to Tk
         # (which only lends the clipboard while we run) if that fails.
         persisted = clipboard.copy(row["content"], self.root)
+        self.db.mark_used(row["id"])   # copying makes this the MRU snippet
+        self.ui.refresh()              # so it floats to the top immediately
         if self.detail is not None and self.detail.winfo_exists():
             self.detail.destroy()
             self.detail = None
@@ -144,6 +146,8 @@ class App:
         if self.detail is not None and self.detail.winfo_exists():
             self.detail.destroy()
         self._ensure_visible()
+        self.db.mark_used(row["id"])   # viewing a snippet also counts as a use
+        self.ui.refresh()
         self.detail = DetailWindow(self.root, row, actions={
             "copy": self.copy,
             "edit": lambda: self.open_edit(row),

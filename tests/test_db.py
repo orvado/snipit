@@ -1,6 +1,9 @@
 """Quick sanity tests for the SnipIt data layer (no GUI needed)."""
 import _sandbox  # noqa: F401  (must precede snipit imports)
 
+import sqlite3  # noqa: E402
+import time  # noqa: E402
+
 from snipit.db import Database  # noqa: E402
 
 
@@ -30,6 +33,51 @@ def main():
     db.delete(sid2)
     db.delete(sid)
     print("--- after delete, count:", db.count())
+
+    # --- MRU ordering ------------------------------------------------
+    print("--- MRU ordering:")
+    a = db.add("mru alpha", "needle mru")
+    b = db.add("mru beta", "needle mru")
+    rows = db.search("mru")
+    print("  initial:", [(r["id"], r["heading"]) for r in rows if r["id"] in (a, b)])
+    assert rows[0]["id"] == b, "before any use, newest addition sorts first"
+    db.mark_used(a)
+    rows = db.search("mru")
+    assert rows[0]["id"] == a, "a used snippet sorts above unused ones"
+    time.sleep(0.01)  # last_used_at has ms precision; stay out of a tie
+    db.mark_used(b)
+    rows = db.search("mru")
+    assert rows[0]["id"] == b, "most recently used sorts first"
+    time.sleep(0.01)
+    db.mark_used(a)
+    rows = db.search("")
+    assert rows[0]["id"] == a, "empty query also orders MRU first"
+    rows = db.search("mru")
+    assert rows[0]["id"] == a, "filtered search orders MRU first too"
+    db.delete(a)
+    db.delete(b)
+
+    # --- migration: old schema gains last_used_at ---------------------
+    print("--- migration from pre-MRU schema:")
+    legacy = _sandbox.db_path("legacy.db")
+    conn = sqlite3.connect(legacy)
+    conn.executescript(
+        "CREATE TABLE snippets (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "heading TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+        "INSERT INTO snippets (heading, content, created_at, updated_at) "
+        "VALUES ('legacy', 'old data', '2024-01-01T00:00:00', '2024-06-01T00:00:00');"
+    )
+    conn.commit()
+    conn.close()
+    db3 = Database(legacy)
+    cols = {r["name"] for r in db3.conn.execute("PRAGMA table_info(snippets)")}
+    assert "last_used_at" in cols, "migration must add the last_used_at column"
+    assert db3.get(1)["last_used_at"] == "2024-06-01T00:00:00", \
+        "migration must backfill last_used_at from updated_at"
+    assert db3.count() == 1, "migration must not seed an existing database"
+    db3.close()
+    print("--- migration ok, column:", sorted(cols))
 
     # persistence: reopen
     db.close()
