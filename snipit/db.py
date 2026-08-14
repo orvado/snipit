@@ -114,29 +114,58 @@ class Database:
     _MRU_ORDER = "ORDER BY last_used_at DESC, updated_at DESC, id DESC"
 
     def search(self, query: str, limit: int = 300):
-        """Progressive search: all whitespace-separated terms must match the
+        """Progressive search: every whitespace-separated term must match the
         heading or the content (case-insensitive, AND semantics).
 
-        Results are ordered most-recently-used first; never-used snippets
-        sort below them by last edit, then newest id.
+        Terms of 3+ characters are ranked by FTS5 bm25 (heading matches
+        weighted over content); most-recently-used order breaks ties.
+        Terms shorter than that (trigram MATCH cannot represent them) fall
+        back to the LIKE filter, and a query with only short terms keeps
+        the plain LIKE path. The empty query browses purely by MRU.
         """
-        terms = [t.strip().lower() for t in query.split() if t.strip()]
+        terms = [t.strip() for t in query.split() if t.strip()]
         if not terms:
             return self.conn.execute(
                 f"SELECT * FROM snippets {self._MRU_ORDER} LIMIT ?", (limit,)
             ).fetchall()
 
-        clauses, params = [], []
-        for t in terms:
-            like = self._like(t)
-            clauses.append(
-                "(lower(heading) LIKE ? ESCAPE '\\' OR lower(content) LIKE ? ESCAPE '\\')"
-            )
-            params += [like, like]
+        fts_terms = [t for t in terms if len(t) >= 3]
+        like_terms = [t for t in terms if len(t) < 3]
+        if not fts_terms:
+            # e.g. "ip" — everything is too short for trigram; LIKE path
+            clauses, params = [], []
+            for t in like_terms:
+                like = self._like(t.lower())
+                clauses.append(
+                    "(lower(heading) LIKE ? ESCAPE '\\' OR lower(content) LIKE ? ESCAPE '\\')"
+                )
+                params += [like, like]
+            return self.conn.execute(
+                "SELECT * FROM snippets WHERE " + " AND ".join(clauses)
+                + f" {self._MRU_ORDER} LIMIT ?", params + [limit]
+            ).fetchall()
+
+        # Each long term is a quoted substring phrase; embedded quotes are
+        # escaped FTS5-style (""). '%'/'_'/'\\' need no escaping here.
+        match = " AND ".join(f'"{t.replace(chr(34), chr(34) * 2)}"' for t in fts_terms)
         sql = (
-            "SELECT * FROM snippets WHERE "
-            + " AND ".join(clauses)
-            + f" {self._MRU_ORDER} LIMIT ?"
+            "SELECT s.* FROM snippets_fts JOIN snippets s ON s.id = snippets_fts.rowid "
+            "WHERE snippets_fts MATCH ?"
+        )
+        params = [match]
+        if like_terms:
+            clauses, like_params = [], []
+            for t in like_terms:
+                like = self._like(t.lower())
+                clauses.append(
+                    "(lower(s.heading) LIKE ? ESCAPE '\\' OR lower(s.content) LIKE ? ESCAPE '\\')"
+                )
+                like_params += [like, like]
+            sql += " AND " + " AND ".join(clauses)
+            params += like_params
+        sql += (
+            " ORDER BY bm25(snippets_fts, 5.0, 1.0), "
+            "s.last_used_at DESC, s.updated_at DESC, s.id DESC LIMIT ?"
         )
         return self.conn.execute(sql, params + [limit]).fetchall()
 

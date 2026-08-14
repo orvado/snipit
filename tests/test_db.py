@@ -35,26 +35,26 @@ def main():
     print("--- after delete, count:", db.count())
 
     # --- MRU ordering ------------------------------------------------
+    # MRU order is the contract for the empty-query browse list; typed
+    # queries rank by relevance first (see the FTS5 ranked-search block).
     print("--- MRU ordering:")
     a = db.add("mru alpha", "needle mru")
     b = db.add("mru beta", "needle mru")
-    rows = db.search("mru")
+    rows = db.search("")
     print("  initial:", [(r["id"], r["heading"]) for r in rows if r["id"] in (a, b)])
     assert rows[0]["id"] == b, "before any use, newest addition sorts first"
     time.sleep(0.01)  # last_used_at has ms precision; stay out of a tie
     db.mark_used(a)
-    rows = db.search("mru")
-    assert rows[0]["id"] == a, "a used snippet sorts above unused ones"
-    time.sleep(0.01)  # last_used_at has ms precision; stay out of a tie
+    rows = db.search("")
+    assert rows[0]["id"] == a, "a used snippet sorts above unused ones in browse"
+    time.sleep(0.01)
     db.mark_used(b)
-    rows = db.search("mru")
-    assert rows[0]["id"] == b, "most recently used sorts first"
+    rows = db.search("")
+    assert rows[0]["id"] == b, "most recently used sorts first in browse"
     time.sleep(0.01)
     db.mark_used(a)
     rows = db.search("")
-    assert rows[0]["id"] == a, "empty query also orders MRU first"
-    rows = db.search("mru")
-    assert rows[0]["id"] == a, "filtered search orders MRU first too"
+    assert rows[0]["id"] == a, "empty query orders MRU first"
     db.delete(a)
     db.delete(b)
 
@@ -117,6 +117,27 @@ def main():
         "SELECT content FROM snippets_fts WHERE rowid=1"
     ).fetchone()[0] == "old data xyz"
     db4.close()
+
+    # --- FTS5: ranked search ------------------------------------------
+    print("--- FTS5 ranked search:")
+    assert [r["heading"] for r in db.search("ip config")] == \
+        ["Show IP configuration", "Flush DNS cache"], "multi-term AND must still work"
+    assert [r["heading"] for r in db.search("chatgpt rubber")] == ["ChatGPT: rubber duck"]
+    assert len(db.search("zzzznomatch")) == 0
+    p = db.add("percent fts", "50% done")
+    assert len(db.search("50%")) == 1, "literal % must still match"
+    db.delete(p)
+    assert len(db.search("IP CONFIG")) >= 2, "search must stay case-insensitive"
+    h = db.add("ipconfig", "zzz")
+    c = db.add("zzz", "ipconfig details here")
+    rows = db.search("ipconfig")
+    assert rows[0]["id"] == h, "heading match must rank above content-only match"
+    time.sleep(0.01)  # last_used_at has ms precision; stay out of a tie
+    db.mark_used(c)   # MRU must NOT outweigh relevance
+    rows = db.search("ipconfig")
+    assert rows[0]["id"] == h, "relevance beats recency"
+    db.delete(h)
+    db.delete(c)
 
     # persistence: reopen
     db.close()
