@@ -1,10 +1,12 @@
 """Backup primitives: clean SQLite snapshots via VACUUM INTO + pruning."""
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from .config import MAX_BACKUPS
 
@@ -101,6 +103,36 @@ class BackupStore:
         if not row or row[0] != "ok":
             raise ValueError(f"downloaded backup failed integrity check: {row}")
         return dest
+
+    def restore(self, live_db, open_factory) -> object:
+        """Replace the local DB with the newest verified backup.
+
+        Ordering matters: the safety snapshot and the download+verify both
+        happen while the live DB is still open, so any failure leaves it
+        untouched. Only after verification do we close, replace and reopen.
+        ``open_factory`` reopens the Database (its __init__ migrates old
+        schemas in place, so pre-FTS backups restore cleanly).
+        """
+        db_path = Path(live_db.path)
+        self._pre_restore_snapshot(db_path)
+        tmp = db_path.with_name(f".restore_{uuid4().hex}.db")
+        try:
+            self.download_verified(self.list_backups()[0].name, tmp)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+        live_db.close()
+        os.replace(tmp, db_path)                    # atomic, same volume
+        for suffix in ("-wal", "-shm"):
+            Path(str(db_path) + suffix).unlink(missing_ok=True)
+        return open_factory(db_path)
+
+    def _pre_restore_snapshot(self, db_path: Path) -> Path:
+        """Safety net: snapshot the current local DB before overwriting it."""
+        snap = snapshot_db(db_path, self.local_dir, prefix="pre_restore_")
+        for old in sorted(self.local_dir.glob("pre_restore_*.db"), reverse=True)[3:]:
+            old.unlink()
+        return snap
 
     def _prune_cloud(self) -> None:
         for meta in sorted(self.provider.list(),

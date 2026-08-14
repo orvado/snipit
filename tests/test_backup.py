@@ -39,7 +39,9 @@ class FakeCloud(CloudProvider):
         self.files.pop(name, None)
 
     def list(self) -> list[BackupMeta]:
-        return [BackupMeta(n, "2026-01-01T00:00:00", len(b), id=n)
+        # created_at mirrors the name so ordering is deterministic (names
+        # are timestamps, newest sorts last in ascending order).
+        return [BackupMeta(n, n, len(b), id=n)
                 for n, b in sorted(self.files.items())]
 
 
@@ -75,7 +77,30 @@ def main():
     assert len(cloud.files) == 3, "cloud must be pruned to keep"
     assert len(list(Path(_sandbox.db_path("backups")).glob("snipit_backup_*.db"))) == 3
     print("  cloud files kept:", sorted(cloud.files))
+
+    # --- BackupStore.restore: verified round-trip ----------------------
+    print("--- BackupStore.restore:")
+    db.add("restore marker", "restore needle unique")
+    before = db.count()
+    store.backup()                          # snapshot BEFORE further edits
+    db.add("post-backup", "should be gone after restore")
+    db.update(db.search("restore needle unique")[0]["id"],
+              "renamed", "restore needle unique")
+    target = Path(db.path)
+    restored = store.restore(db, open_factory=lambda p: Database(p))
+    db = restored    # the old handle was closed by restore; keep this one
+    print("  before:", before, "| restored count:", db.count())
+    assert db.count() == before, "restored db must match the backup snapshot"
+    assert not db.search("post-backup"), "post-backup edits must not survive restore"
+    row = db.search("restore needle unique")[0]
+    assert row["heading"] == "restore marker", "heading must be back to the snapshot value"
+    # A stale -wal left next to the replaced db would replay pre-restore
+    # rows on the next open; the post-backup assertion above catches that.
+    # (While a WAL-mode Database is OPEN, its own fresh -wal/-shm exist —
+    # they must be gone after a clean close.)
     db.close()
+    assert not target.with_name(target.name + "-wal").exists(), \
+        "no stale WAL may survive a clean close"
     print("BACKUP PRIMITIVES PASSED")
 
 
