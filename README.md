@@ -9,7 +9,9 @@ press **Enter** to copy, and the window gets out of your way.
 ## Features
 
 - **Progressive search** — every keystroke re-filters. Multiple space-separated
-  terms must all match (AND) against the heading *or* the content.
+  terms must all match (AND) against the heading *or* the content. Typed
+  results are relevance-ranked (FTS5): heading matches outrank content
+  matches, and most-recently-used order breaks ties.
 - **Single-line results** — heading + content preview on one row for fast
   visual scanning; arrow keys / typing work right from the search box.
 - **Global hotkey** — `Ctrl+Alt+S` summons the window from anywhere; it hides
@@ -26,10 +28,11 @@ press **Enter** to copy, and the window gets out of your way.
   view with Copy / Edit / Delete. Code-ish snippets render in a monospace font.
 - **Add / edit / delete** — `Ctrl+N`, `Ctrl+E`, `Ctrl+Del`; or the tray menu.
 - **SQLite storage** — one small `.db` file in `%APPDATA%\SnipIt\`.
-- **MRU results** — search results are ordered most-recently-used first:
+- **MRU results** — the empty search box browses most-recently-used first:
   copying a snippet (or viewing it in the detail window) brings it to the
   top of the list; newly added snippets start at the top until something
-  else is used.
+  else is used. Typed queries rank by match relevance first, with MRU as
+  the tiebreak.
 - **Nothing is trimmed silently** — content up to **32,768 characters** saves
   as-is; anything longer blocks Save with a message rather than being cut down
   behind your back.
@@ -109,8 +112,10 @@ keep longer snippets.
 - Schema: `snippets(id, heading, content, created_at, updated_at, last_used_at)`
   — `last_used_at` drives the MRU ordering (NULL = never used); content is
   `TEXT`; saves over `MAX_CONTENT_LEN` are refused, never truncated.
-  Existing databases are migrated automatically on first run (the column is
-  added and backfilled from `updated_at`).
+  A `snippets_fts` FTS5 mirror table (trigram tokenizer) backs the ranked
+  search, kept in sync by triggers. Existing databases are migrated
+  automatically on first run (the `last_used_at` column is added and
+  backfilled from `updated_at`; `snippets_fts` is backfilled from all rows).
 - Delete the files (or use `--reset-db`, which also clears a stale `-wal`) to
   start over. Quit SnipIt from the tray first — it holds the database open.
 
