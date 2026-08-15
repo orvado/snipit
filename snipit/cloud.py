@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -36,8 +38,13 @@ class GoogleDriveProvider:
         if self._transport is not None:
             return self._transport(url, body, headers, method=method)
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise RuntimeError(
+                f"Drive API {exc.code}: {detail or exc.reason}") from exc
         return json.loads(raw.decode()) if raw else {}
 
     def _request_bytes(self, url: str) -> bytes:
@@ -45,8 +52,13 @@ class GoogleDriveProvider:
         if self._transport is not None:
             return self._transport(url, None, headers, method="GET")
         req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            return resp.read()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:400]
+            raise RuntimeError(
+                f"Drive API {exc.code}: {detail or exc.reason}") from exc
 
     def list(self) -> list[BackupMeta]:
         q = urllib.parse.urlencode({
@@ -61,15 +73,23 @@ class GoogleDriveProvider:
                 for f in data.get("files", [])]
 
     def upload(self, name: str, path: Path) -> None:
-        file_id = self._request_json(
-            "POST", f"{DRIVE_UPLOAD}?uploadType=media",
-            path.read_bytes(), "application/octet-stream")["id"]
-        # appDataFolder is a hidden parent; move the uploaded file into it
-        # and set its display name.
+        # Multipart upload with parents pinned to appDataFolder: creates the
+        # file directly inside the hidden per-app space in one request. The
+        # naive media-upload-then-PATCH flow creates the file in the user's
+        # My Drive root first, which a drive.appdata-scoped app is forbidden
+        # to touch (HTTP 403).
+        boundary = f"snipit{os.urandom(8).hex()}"
+        meta = json.dumps({"name": name, "parents": [APP_DATA_FOLDER]}).encode()
+        payload = path.read_bytes()
+        body = (f"--{boundary}\r\n"
+                f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+                ).encode() + meta + b"\r\n" + (
+                f"--{boundary}\r\n"
+                f"Content-Type: application/octet-stream\r\n\r\n"
+                ).encode() + payload + b"\r\n" + f"--{boundary}--\r\n".encode()
         self._request_json(
-            "PATCH",
-            f"{DRIVE_API}/files/{file_id}?addParents={APP_DATA_FOLDER}&fields=id",
-            json.dumps({"name": name}).encode(), "application/json")
+            "POST", f"{DRIVE_UPLOAD}?uploadType=multipart",
+            body, f"multipart/related; boundary={boundary}")
 
     def download(self, name: str, dest: Path) -> None:
         meta = self._find(name)

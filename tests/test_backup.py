@@ -151,7 +151,8 @@ def main():
     calls = []
 
     def drive_transport(url2, data=None, headers=None, method=None):
-        calls.append((method or ("POST" if data is not None else "GET"), url2))
+        calls.append((method or ("POST" if data is not None else "GET"),
+                      url2, data))
         if "drive/v3/files?" in url2 and not data and method != "DELETE":
             return {"files": [{"id": "f1", "name": "snipit_backup_x.db",
                                "createdTime": "2026-01-01T00:00:00", "size": "5"}]}
@@ -173,9 +174,22 @@ def main():
     assert dl.read_bytes() == b"SQLite format 3\x00payload", \
         "download must write the raw file bytes"
     prov.delete("snipit_backup_x.db")
-    methods = [m for m, _ in calls]
+    methods = [m for m, _, _ in calls]
     print("  methods:", methods)
-    assert "PATCH" in methods and "DELETE" in methods and methods.count("POST") >= 1
+    # App-data uploads must be a single multipart POST that creates the
+    # file directly inside appDataFolder. The old media-upload-then-PATCH
+    # flow created the file in the user's My Drive root first, which a
+    # drive.appdata-scoped app cannot touch -> HTTP 403 Forbidden.
+    assert methods.count("POST") >= 1 and "PATCH" not in methods, \
+        "upload must create the file in appDataFolder directly (no PATCH)"
+    _, upload_url, upload_body = calls[1]
+    assert "uploadType=multipart" in upload_url, \
+        "app-data upload must use multipart so parents can be set"
+    assert b'"parents":["appDataFolder"]' in upload_body or \
+        b'"parents": ["appDataFolder"]' in upload_body, \
+        "multipart metadata must pin parents to appDataFolder"
+    assert b"payload" in upload_body, "multipart body must carry the bytes"
+    assert "DELETE" in methods, "delete must still issue a DELETE"
 
     # --- connect dance end-to-end (simulated browser) ------------------
     print("--- connect dance:")

@@ -286,6 +286,7 @@ class App:
                 metas = store.list_backups()
             except Exception as exc:
                 msg = f"list failed: {exc}"
+                print(f"[SnipIt] cloud list failed: {exc}", file=sys.stderr)
                 self._queue.put(lambda: self._cloud_error(msg))
                 return
             self._queue.put(lambda: win.set_backups(metas))
@@ -406,6 +407,7 @@ class App:
                 name = store.backup()
             except Exception as exc:
                 msg = f"backup failed: {exc}"
+                print(f"[SnipIt] cloud backup failed: {exc}", file=sys.stderr)
                 self._queue.put(lambda: self._cloud_error(msg))
                 return
             self._queue.put(lambda: self._backup_done(name))
