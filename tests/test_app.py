@@ -54,6 +54,22 @@ def main():
                                and not app.db.search("cloud-restore-probe"))
         results["ui_refreshed"] = app.ui.listbox.size() == app.db.count()
 
+    def step_connect_watchdog():
+        # A connect left in flight past the exchange deadline must force a
+        # visible failure (window can never sit frozen on "Signed in — …").
+        app._connecting = True
+        app._signin_stage()          # arms the watchdog via root.after
+        results["watchdog_armed"] = app._connect_watchdog_job is not None
+        app._connect_watchdog()      # simulate the deadline firing
+        results["watchdog_failed"] = app._connecting is False
+        results["watchdog_visible"] = \
+            "connect failed" in app.ui.status.cget("text")
+        # A real outcome disarms the watchdog so it can't fire later.
+        app._connecting = True
+        app._signin_stage()
+        app._cloud_connected()
+        results["watchdog_disarmed"] = app._connect_watchdog_job is None
+
     def step_quit():
         results["viewable"] = root.state() != "withdrawn"
         app.quit()
@@ -61,7 +77,8 @@ def main():
     root.after(600, step_show_copy)
     root.after(1300, step_escape_cancel)
     root.after(2200, step_cloud_restore)
-    root.after(3100, step_quit)
+    root.after(3100, step_connect_watchdog)
+    root.after(4000, step_quit)
 
     first_content = app.db.search("")[0]["content"]
     rc = app.run()
@@ -74,6 +91,14 @@ def main():
     assert results.get("restored") is True, \
         "restore must swap in the snapshot and drop post-backup edits"
     assert results.get("ui_refreshed") is True, "ui must re-render against the restored db"
+    assert results.get("watchdog_armed") is True, \
+        "sign-in stage must arm the connect watchdog"
+    assert results.get("watchdog_failed") is True, \
+        "watchdog must force a visible failure instead of freezing"
+    assert results.get("watchdog_visible") is True, \
+        "watchdog failure must reach the status bar"
+    assert results.get("watchdog_disarmed") is True, \
+        "a real connect outcome must disarm the watchdog"
     print("APP SMOKE TEST PASSED")
 
 

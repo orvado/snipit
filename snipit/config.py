@@ -47,6 +47,11 @@ MARGIN_TOP = 140
 GOOGLE_CLIENT_ID = os.environ.get("SNIPIT_GOOGLE_CLIENT_ID", "")
 CLOUD_SCOPES = ["https://www.googleapis.com/auth/drive.appdata"]
 MAX_BACKUPS = 10
+# Hard cap on the OAuth token exchange (worker thread join deadline). The
+# UI watchdog fires slightly later and force-fails the connect flow if the
+# worker never reports back, so the window can never sit frozen on
+# "Signed in — exchanging code…".
+EXCHANGE_TIMEOUT_S = 30.0
 
 
 def backups_dir() -> Path:

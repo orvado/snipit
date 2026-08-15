@@ -56,12 +56,14 @@ class App:
         self._auto_hide_job = None
         self._cloud_win = None
         self._connecting = False
+        self._connect_watchdog_job = None
         self.cloud_provider = None
         self.backup_store = None
         self._restore_cloud_session()
 
     # ------------------------------------------------------------- run/quit
     def run(self) -> int:
+        print(f"[SnipIt] {APP_NAME} v{APP_VERSION} starting", file=sys.stderr)
         self._start_ipc_thread()
         self.tray = TrayIcon(self._tray_show, self._tray_new, self._tray_quit,
                              self._tray_cloud, self._tray_backup)
@@ -311,7 +313,8 @@ class App:
             try:
                 tokens = _run_connect_dance(
                     config.GOOGLE_CLIENT_ID, config.CLOUD_SCOPES,
-                    on_redirect=lambda: self._queue.put(self._signin_stage))
+                    on_redirect=lambda: self._queue.put(self._signin_stage),
+                    exchange_timeout_s=config.EXCHANGE_TIMEOUT_S)
                 TokenStore(config.cloud_token_path()).save(tokens)
             except Exception as exc:
                 print(f"[SnipIt] OAuth connect failed: {exc}", file=sys.stderr)
@@ -327,13 +330,38 @@ class App:
         win = self._cloud_win
         if win is not None and win.winfo_exists():
             win.set_status("Signed in — exchanging code…")
+        # UI-side backstop: if the worker thread never reports success or
+        # failure (stuck exchange, swallowed exception, lost callback), the
+        # window must still advance to a visible error instead of freezing.
+        delay_ms = int((config.EXCHANGE_TIMEOUT_S + 15) * 1000)
+        self._connect_watchdog_job = self.root.after(
+            delay_ms, self._connect_watchdog)
+
+    def _connect_watchdog(self) -> None:
+        """Force a visible failure if a connect is still in flight past the
+        exchange deadline. Runs on the UI thread; safe to fire after a real
+        outcome already cancelled us — ``_connecting`` is False then."""
+        self._connect_watchdog_job = None
+        if self._connecting:
+            self._connect_failed(
+                "timed out waiting for Google's answer (proxy/VPN?)")
+
+    def _cancel_connect_watchdog(self) -> None:
+        if self._connect_watchdog_job is not None:
+            try:
+                self.root.after_cancel(self._connect_watchdog_job)
+            except tk.TclError:
+                pass
+            self._connect_watchdog_job = None
 
     def _connect_failed(self, msg: str) -> None:
         self._connecting = False
+        self._cancel_connect_watchdog()
         self._cloud_error(f"connect failed: {msg}")
 
     def _cloud_connected(self) -> None:
         self._connecting = False
+        self._cancel_connect_watchdog()
         try:
             self._attach_cloud(GoogleDriveProvider(
                 config.GOOGLE_CLIENT_ID, self._cloud_token_getter()))
