@@ -45,6 +45,10 @@ MARGIN_TOP = 140
 # free Google Cloud OAuth "Desktop app" client and put its id here or in
 # SNIPIT_GOOGLE_CLIENT_ID. The scope is the hidden per-app Drive folder only.
 GOOGLE_CLIENT_ID = os.environ.get("SNIPIT_GOOGLE_CLIENT_ID", "")
+# Optional: for Google Cloud OAuth clients of type "Web application"
+# (which require a secret at the token endpoint). Leave empty for a
+# "Desktop app" client, which must NOT send a secret.
+GOOGLE_CLIENT_SECRET = os.environ.get("SNIPIT_GOOGLE_CLIENT_SECRET", "")
 CLOUD_SCOPES = ["https://www.googleapis.com/auth/drive.appdata"]
 MAX_BACKUPS = 10
 # Hard cap on the OAuth token exchange (worker thread join deadline). The

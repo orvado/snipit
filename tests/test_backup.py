@@ -104,9 +104,20 @@ def main():
     assert tok["refresh_token"] == "rt"
     assert b"grant_type=authorization_code" in calls[0][1]
     assert b"code_verifier=" + verifier.encode() in calls[0][1]
+    assert b"client_secret=" not in calls[0][1], \
+        "public (desktop) clients must not send a secret"
     tok2 = refresh_access_token(fake_post, "rt", "cid")
     assert tok2["access_token"] == "at"
     assert b"grant_type=refresh_token" in calls[-1][1]
+    # Web-application clients (Google requires a secret for those) work too
+    # when one is configured: the token endpoint must receive it.
+    tok3 = exchange_code(fake_post, "thecode", verifier,
+                         "http://127.0.0.1:8123/", "cid", client_secret="web-secret")
+    assert tok3["access_token"] == "at"
+    assert b"client_secret=web-secret" in calls[-1][1], \
+        "configured client_secret must reach the token endpoint"
+    tok4 = refresh_access_token(fake_post, "rt", "cid", client_secret="web-secret")
+    assert b"client_secret=web-secret" in calls[-1][1]
     ts = TokenStore(_sandbox.db_path("token.json"))
     ts.save({"refresh_token": "rt", "access_token": "at", "expires_at": 0})
     assert ts.load()["refresh_token"] == "rt"
@@ -202,13 +213,15 @@ def main():
         # urlencode percent-encodes the redirect_uri value
         assert b"redirect_uri=http%3A%2F%2Flocalhost%3A" in data \
             and b"grant_type=authorization_code" in data
+        assert b"client_secret=dance-secret" in data, \
+            "dance must forward the configured client_secret"
         redirect_seen["fired"] = True
         return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
 
     tokens = _run_connect_dance("cid", ["https://www.googleapis.com/auth/drive.appdata"],
                                 open_browser=fake_browser, exchange_transport=fake_exchange,
                                 on_redirect=lambda: redirect_seen.update(fired=True),
-                                timeout_s=10)
+                                timeout_s=10, client_secret="dance-secret")
     print("  dance tokens:", sorted(tokens))
     assert tokens["refresh_token"] == "rt", "dance must return exchanged tokens"
     assert redirect_seen["fired"] is True, "on_redirect must fire before the exchange"

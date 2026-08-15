@@ -70,6 +70,30 @@ def main():
         app._cloud_connected()
         results["watchdog_disarmed"] = app._connect_watchdog_job is None
 
+    def step_connect_failure():
+        # A failed token exchange must surface in the UI. Regression for the
+        # lambda-captures-exc bug: the queued callback used to reference the
+        # except-block variable after it was deleted, crashing with NameError
+        # on the UI thread and leaving the window frozen (the watchdog then
+        # masked the real error with a generic timeout message).
+        import snipit.app as appmod
+        import snipit.config as cfg
+        cfg.GOOGLE_CLIENT_ID = "cid"   # enable the connect path
+
+        def boom_dance(*a, **k):
+            raise RuntimeError("token endpoint 400: client_secret is missing")
+
+        appmod._run_connect_dance = boom_dance
+        app.connect_cloud()
+        results["connect_failure_started"] = True
+
+    def step_check_connect_failure():
+        # the worker queued _connect_failed; _poll must have run it without
+        # NameError, resetting _connecting and showing the real error
+        results["connect_failed_shown"] = (
+            app._connecting is False
+            and "connect failed" in app.ui.status.cget("text"))
+
     def step_quit():
         results["viewable"] = root.state() != "withdrawn"
         app.quit()
@@ -78,7 +102,9 @@ def main():
     root.after(1300, step_escape_cancel)
     root.after(2200, step_cloud_restore)
     root.after(3100, step_connect_watchdog)
-    root.after(4000, step_quit)
+    root.after(3800, step_connect_failure)
+    root.after(4300, step_check_connect_failure)
+    root.after(4800, step_quit)
 
     first_content = app.db.search("")[0]["content"]
     rc = app.run()
@@ -99,6 +125,10 @@ def main():
         "watchdog failure must reach the status bar"
     assert results.get("watchdog_disarmed") is True, \
         "a real connect outcome must disarm the watchdog"
+    assert results.get("connect_failure_started") is True, \
+        "connect failure step must run"
+    assert results.get("connect_failed_shown") is True, \
+        "connect failure must reach the UI (lambda-captures-exc regression)"
     print("APP SMOKE TEST PASSED")
 
 

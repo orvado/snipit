@@ -65,22 +65,31 @@ def _post_form(transport, url: str, data: dict) -> dict:
 
 
 def exchange_code(transport, code: str, verifier: str, redirect_uri: str,
-                  client_id: str) -> dict:
-    return _post_form(transport, GOOGLE_TOKEN_URL, {
+                  client_id: str, client_secret: str = "") -> dict:
+    data = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": redirect_uri,
         "client_id": client_id,
         "code_verifier": verifier,
-    })
+    }
+    if client_secret:
+        # Web-application clients must authenticate with their secret at
+        # the token endpoint; desktop (public) clients must NOT send one.
+        data["client_secret"] = client_secret
+    return _post_form(transport, GOOGLE_TOKEN_URL, data)
 
 
-def refresh_access_token(transport, refresh_token: str, client_id: str) -> dict:
-    return _post_form(transport, GOOGLE_TOKEN_URL, {
+def refresh_access_token(transport, refresh_token: str, client_id: str,
+                         client_secret: str = "") -> dict:
+    data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
-    })
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+    return _post_form(transport, GOOGLE_TOKEN_URL, data)
 
 
 def parse_redirect(query_string: str, expected_state: str) -> str:

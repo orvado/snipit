@@ -118,6 +118,12 @@ The latest 10 backups are kept, locally and on the cloud.
 
    (or set `GOOGLE_CLIENT_ID` in `snipit/config.py`).
 
+   **Using a "Web application" client instead?** Those require a client
+   secret at the token endpoint, so also set `SNIPIT_GOOGLE_CLIENT_SECRET`
+   (or `GOOGLE_CLIENT_SECRET` in `snipit/config.py`). SnipIt sends it only
+   when configured — a Desktop-app (public) client must leave it empty,
+   because Google rejects a secret for public clients.
+
 5. Click **☁ → Connect…** and approve in the browser.
 
 Restoring replaces the current database — a safety snapshot of the pre-restore
@@ -134,6 +140,7 @@ Environment variables:
 | `SNIPIT_HOTKEY` | `ctrl+alt+s` | Global hotkey (`keyboard` library syntax, e.g. `ctrl+shift+space`) |
 | `SNIPIT_DATA_DIR` | `%APPDATA%` | Where `SnipIt\snipit.db` lives |
 | `SNIPIT_GOOGLE_CLIENT_ID` | *(empty = cloud disabled)* | Google OAuth client ID for cloud backup |
+| `SNIPIT_GOOGLE_CLIENT_SECRET` | *(empty)* | Client secret — only for "Web application" OAuth clients; leave empty for Desktop app |
 
 Tweak `snipit/config.py` directly for `AUTO_CLOSE_MS`, `MAX_CONTENT_LEN`,
 `MAX_RESULTS`, `CLIPBOARD_CRLF`, etc.

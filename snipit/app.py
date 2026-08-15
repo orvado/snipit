@@ -254,7 +254,8 @@ class App:
                 raise RuntimeError("cloud not connected")
             if tok.get("access_token") and tok.get("expires_at", 0) > time.time() + 60:
                 return tok["access_token"]
-            fresh = refresh_access_token(None, tok["refresh_token"], cid)
+            fresh = refresh_access_token(None, tok["refresh_token"], cid,
+                                         config.GOOGLE_CLIENT_SECRET)
             fresh["refresh_token"] = tok["refresh_token"]  # refresh may omit it
             fresh["expires_at"] = time.time() + fresh.get("expires_in", 3600)
             store.save(fresh)
@@ -284,7 +285,8 @@ class App:
             try:
                 metas = store.list_backups()
             except Exception as exc:
-                self._queue.put(lambda: self._cloud_error(f"list failed: {exc}"))
+                msg = f"list failed: {exc}"
+                self._queue.put(lambda: self._cloud_error(msg))
                 return
             self._queue.put(lambda: win.set_backups(metas))
 
@@ -314,11 +316,13 @@ class App:
                 tokens = _run_connect_dance(
                     config.GOOGLE_CLIENT_ID, config.CLOUD_SCOPES,
                     on_redirect=lambda: self._queue.put(self._signin_stage),
-                    exchange_timeout_s=config.EXCHANGE_TIMEOUT_S)
+                    exchange_timeout_s=config.EXCHANGE_TIMEOUT_S,
+                    client_secret=config.GOOGLE_CLIENT_SECRET)
                 TokenStore(config.cloud_token_path()).save(tokens)
             except Exception as exc:
-                print(f"[SnipIt] OAuth connect failed: {exc}", file=sys.stderr)
-                self._queue.put(lambda: self._connect_failed(str(exc)))
+                msg = str(exc)
+                print(f"[SnipIt] OAuth connect failed: {msg}", file=sys.stderr)
+                self._queue.put(lambda: self._connect_failed(msg))
                 return
             print("[SnipIt] OAuth: connected", file=sys.stderr)
             self._queue.put(self._cloud_connected)
@@ -401,7 +405,8 @@ class App:
             try:
                 name = store.backup()
             except Exception as exc:
-                self._queue.put(lambda: self._cloud_error(f"backup failed: {exc}"))
+                msg = f"backup failed: {exc}"
+                self._queue.put(lambda: self._cloud_error(msg))
                 return
             self._queue.put(lambda: self._backup_done(name))
 
@@ -434,7 +439,8 @@ class App:
             try:
                 tmp = store.prepare_restore(db_path)
             except Exception as exc:
-                self._queue.put(lambda: self._restore_failed(str(exc)))
+                msg = str(exc)
+                self._queue.put(lambda: self._restore_failed(msg))
                 return
             self._queue.put(lambda: self._apply_restore(tmp))
 
@@ -543,7 +549,8 @@ def _run_connect_dance(client_id: str, scopes: list[str],
                        exchange_transport=None,
                        on_redirect=None,
                        timeout_s: float = 120.0,
-                       exchange_timeout_s: float = 30.0) -> dict:
+                       exchange_timeout_s: float = 30.0,
+                       client_secret: str = "") -> dict:
     """OAuth authorize-in-browser dance: bind the loopback server, open the
     browser, wait for the redirect, exchange the code. Returns tokens.
 
@@ -617,14 +624,14 @@ def _run_connect_dance(client_id: str, scopes: list[str],
             on_redirect()
         return _exchange_with_deadline(exchange_transport, server.auth_code,
                                        verifier, redirect_uri, client_id,
-                                       exchange_timeout_s)
+                                       exchange_timeout_s, client_secret)
     finally:
         server.server_close()
 
 
 def _exchange_with_deadline(transport, code: str, verifier: str,
                             redirect_uri: str, client_id: str,
-                            timeout_s: float) -> dict:
+                            timeout_s: float, client_secret: str = "") -> dict:
     """Exchange the code, abandoning the attempt after ``timeout_s``.
 
     urllib's per-socket timeout does not bound the total exchange: a proxy
@@ -638,7 +645,8 @@ def _exchange_with_deadline(transport, code: str, verifier: str,
     def _do_exchange() -> None:
         try:
             holder["tokens"] = exchange_code(transport, code, verifier,
-                                             redirect_uri, client_id)
+                                             redirect_uri, client_id,
+                                             client_secret)
         except BaseException as exc:      # noqa: BLE001 - re-raised below
             holder["exc"] = exc
 
