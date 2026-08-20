@@ -82,6 +82,38 @@ def main():
     assert not target.with_name(target.name + "-wal").exists(), \
         "no stale WAL may survive a clean close"
 
+    # --- Named restore: the selected backup must win -------------------
+    named_db = Database(_sandbox.db_path("named.db"))
+    named_cloud = FakeCloud()
+    named_store = BackupStore(
+        named_cloud, Path(named_db.path), Path(_sandbox.db_path("named_backups")), keep=5)
+    named_db.add("older marker", "restore the selected older version")
+    older_name = named_store.backup()
+    named_db.add("newer marker", "only present in the newest version")
+    newer_name = named_store.backup()
+    assert older_name != newer_name
+    named_db.add("local marker", "must disappear after restore")
+    tmp = named_store.prepare_restore(older_name, named_db.path)
+    named_db = named_store.apply_restore(named_db, tmp, Database)
+    assert named_db.search("selected older version")
+    assert not named_db.search("only present in the newest version")
+    assert ("download", older_name) in named_cloud.calls
+    assert ("download", newer_name) not in named_cloud.calls
+    assert list(Path(_sandbox.db_path("named_backups")).glob("pre_restore_*.db")), \
+        "named restore must keep a pre-restore safety snapshot"
+    named_db.close()
+
+    empty_db = Database(_sandbox.db_path("empty_restore.db"))
+    empty_store = BackupStore(
+        FakeCloud(), Path(empty_db.path), Path(_sandbox.db_path("empty_backups")))
+    try:
+        empty_store.restore(empty_db, Database)
+        raise AssertionError("restore with no backups must fail clearly")
+    except ValueError as exc:
+        assert "no cloud backups" in str(exc)
+    finally:
+        empty_db.close()
+
     # --- OAuth PKCE helpers + token store ------------------------------
     print("--- OAuth PKCE:")
     verifier = make_code_verifier()

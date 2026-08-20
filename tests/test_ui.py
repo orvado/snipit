@@ -23,6 +23,7 @@ def main():
 
     root = tk.Tk()
     copied = []
+    invoked = {"add": 0, "cloud": 0}
 
     def on_copy(row):
         copied.append(row["content"])
@@ -30,12 +31,12 @@ def main():
     ui = SearchWindow(root, db, actions={
         "copy": on_copy,
         "detail": lambda r: None,
-        "add": lambda: None,
+        "add": lambda: invoked.update(add=invoked["add"] + 1),
         "edit": lambda: None,
         "delete": lambda: None,
         "escape": lambda: None,
         "hide": lambda: root.withdraw(),
-        "cloud": lambda: None,
+        "cloud": lambda: invoked.update(cloud=invoked["cloud"] + 1),
     })
 
     root.update()  # force widget geometry so width math runs
@@ -62,6 +63,28 @@ def main():
     print("copied:", repr(copied[-1]))
     assert copied and "netsh" in copied[-1]
 
+    copied_before = len(copied)
+    ui.add_btn.focus_set()
+    ui.add_btn.event_generate("<Return>")
+    root.update()
+    assert invoked["add"] == 1 and len(copied) == copied_before, \
+        "Enter on Add must invoke Add instead of copying"
+    ui.cloud_btn.focus_set()
+    ui.cloud_btn.event_generate("<Return>")
+    root.update()
+    assert invoked["cloud"] == 1 and len(copied) == copied_before
+
+    ui._search_var.set("chat")
+    ui.refresh()
+    ui.listbox.selection_clear(0, "end")
+    ui.listbox.selection_set(1)
+    selected_id = ui.selected_row()["id"]
+    root.geometry("980x520")
+    root.update()
+    ui._resize_results()
+    assert ui.selected_row()["id"] == selected_id, \
+        "resize reformatting must preserve the selected snippet"
+
     # clear search back to placeholder
     ui.clear_search()
     root.update()
@@ -77,12 +100,21 @@ def main():
 
     # detail window for a multi-line snippet
     row = db.search("rubber")[0]
-    opened = []
+    opened = {"edit": 0, "delete": 0}
     dlg = DetailWindow(root, row, actions={
-        "copy": on_copy, "edit": lambda: None, "delete": lambda: None,
+        "copy": on_copy,
+        "edit": lambda: opened.update(edit=opened["edit"] + 1),
+        "delete": lambda: opened.update(delete=opened["delete"] + 1),
     })
     root.update()
     print("detail opened:", dlg.title(), "| code-like:", _looks_like_code(row["content"]))
+    assert dlg.focus_get() == dlg.copy_btn, "Detail must focus its safe primary action"
+    before_detail_copy = len(copied)
+    dlg._on_copy_key()
+    dlg._on_edit_key()
+    dlg._on_delete_key()
+    assert len(copied) == before_detail_copy + 1
+    assert opened == {"edit": 1, "delete": 1}
     dlg.destroy()
 
     # edit window
@@ -118,11 +150,12 @@ def main():
     # cloud window: fake provider, backup click, list rendering
     cloud = FakeCloud()
     store = BackupStore(cloud, Path(db.path), Path(_sandbox.db_path("backups")), keep=3)
+    restored = []
     win = CloudWindow(root, actions={
         "connect": lambda: None,
         "disconnect": lambda: None,
         "backup": lambda: store.backup(),
-        "restore": lambda: None,
+        "restore": lambda: restored.append(win.selected_backup()),
     }, provider=cloud, store=store)
     root.update()
     print("cloud status:", repr(win.status_lbl.cget("text")))
@@ -139,8 +172,20 @@ def main():
     print("backup list size:", win.backup_list.size())
     assert win.backup_list.size() >= 1
     assert win.selected_backup() == "", "nothing selected yet"
+    assert str(win.restore_btn.cget("state")) == "disabled"
     win.backup_list.selection_set(0)
+    win.backup_list.event_generate("<<ListboxSelect>>")
+    root.update()
     assert win.selected_backup().startswith("snipit_backup_")
+    assert str(win.restore_btn.cget("state")) == "normal"
+    win._restore_key()
+    assert restored == [win.selected_backup()]
+    win.set_busy("backup")
+    assert str(win.backup_btn.cget("state")) == "disabled"
+    assert str(win.restore_btn.cget("state")) == "disabled"
+    assert win.backup_btn.cget("text") == "Backing up…"
+    win.set_busy(None)
+    assert str(win.restore_btn.cget("state")) == "normal"
     win.destroy()
 
     root.destroy()

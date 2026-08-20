@@ -30,7 +30,7 @@ from .oauth import (
 )
 from .tray import TrayIcon
 from .ui import CloudWindow, DetailWindow, EditWindow, SearchWindow
-from .ui import DANGER, NOTICE, OK
+from .ui import DANGER, FG, NOTICE, OK
 
 
 class App:
@@ -55,6 +55,7 @@ class App:
         self.detail = None
         self._auto_hide_job = None
         self._cloud_win = None
+        self._cloud_operation = None
         self._connecting = False
         self._connect_watchdog_job = None
         self.cloud_provider = None
@@ -179,6 +180,13 @@ class App:
             "edit": lambda: self.open_edit(row),
             "delete": lambda: self.delete(row),
         })
+        self.detail.bind("<Destroy>", self._detail_closed, add="+")
+
+    def _detail_closed(self, event) -> None:
+        if event.widget is self.detail:
+            self.detail = None
+            if self.root.winfo_exists() and self._is_visible():
+                self.ui.focus_search()
 
     def open_add(self) -> None:
         was_visible = self._is_visible()
@@ -201,6 +209,10 @@ class App:
             self.open_edit(row)
 
     def open_edit(self, row) -> None:
+        if self.detail is not None and self.detail.winfo_exists():
+            self.detail.destroy()
+            self.detail = None
+
         def on_save(heading, content):
             self.db.update(row["id"], heading, content)
             self.ui.refresh()
@@ -218,9 +230,11 @@ class App:
 
     def delete(self, row) -> None:
         title = (row["heading"] or "").strip() or "(no title)"
+        parent = (self.detail if self.detail is not None
+                  and self.detail.winfo_exists() else self.root)
         if not messagebox.askyesno(APP_NAME,
                                    f"Delete “{title}”?\n\nThis cannot be undone.",
-                                   parent=self.root):
+                                   parent=parent):
             return
         self.db.delete(row["id"])
         self.ui.refresh()
@@ -263,6 +277,19 @@ class App:
 
         return getter
 
+    def _set_cloud_operation(self, operation=None) -> None:
+        self._cloud_operation = operation
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_busy(operation)
+
+    def _cloud_notice(self, text: str, color: str = NOTICE) -> None:
+        win = self._cloud_win
+        if win is not None and win.winfo_exists():
+            win.set_status(text, color)
+        else:
+            self.ui.notify(text, color=color)
+
     def open_cloud(self) -> None:
         if self._cloud_win is not None and self._cloud_win.winfo_exists():
             self._cloud_win.lift()
@@ -274,12 +301,17 @@ class App:
             "backup": self.backup_now,
             "restore": self.restore_cloud,
         }, provider=self.cloud_provider, store=self.backup_store)
+        self._cloud_win.set_busy(self._cloud_operation)
         self._cloud_list()
 
     def _cloud_list(self) -> None:
         store, win = self.backup_store, self._cloud_win
         if store is None or win is None or not win.winfo_exists():
             return
+        if self._cloud_operation is not None:
+            return
+        self._set_cloud_operation("list")
+        win.set_status("Loading backups…")
 
         def work() -> None:
             try:
@@ -289,28 +321,30 @@ class App:
                 print(f"[SnipIt] cloud list failed: {exc}", file=sys.stderr)
                 self._queue.put(lambda: self._cloud_error(msg))
                 return
-            self._queue.put(lambda: win.set_backups(metas))
+            self._queue.put(lambda: self._cloud_list_done(win, metas))
 
         threading.Thread(target=work, daemon=True, name="snipit-cloud-list").start()
 
+    def _cloud_list_done(self, win, metas) -> None:
+        self._set_cloud_operation(None)
+        if win.winfo_exists():
+            win.set_backups(metas)
+            win.set_status("Backups ready" if metas else "No cloud backups yet")
+
     def _cloud_error(self, msg: str) -> None:
-        self.ui.notify(msg, color=DANGER)
-        win = self._cloud_win
-        if win is not None and win.winfo_exists():
-            win.set_status(msg)
+        self._set_cloud_operation(None)
+        self._cloud_notice(msg, DANGER)
 
     def connect_cloud(self) -> None:
-        if self._connecting:
-            self.ui.notify("Sign-in already in progress…", color=NOTICE)
+        if self._cloud_operation is not None:
+            self._cloud_notice("Another cloud action is already in progress")
             return
         if not config.GOOGLE_CLIENT_ID:
-            self.ui.notify("Cloud not configured — set SNIPIT_GOOGLE_CLIENT_ID "
-                           "(see README)", color=NOTICE)
+            self._cloud_notice("Cloud is not configured. See the README for setup.")
             return
         self._connecting = True
-        win = self._cloud_win
-        if win is not None and win.winfo_exists():
-            win.set_status("Waiting for browser sign-in…")
+        self._set_cloud_operation("connect")
+        self._cloud_notice("Waiting for browser sign-in…", FG)
 
         def work() -> None:
             try:
@@ -367,10 +401,11 @@ class App:
     def _cloud_connected(self) -> None:
         self._connecting = False
         self._cancel_connect_watchdog()
+        self._set_cloud_operation(None)
         try:
             self._attach_cloud(GoogleDriveProvider(
                 config.GOOGLE_CLIENT_ID, self._cloud_token_getter()))
-            self.ui.notify("Cloud connected ✓", color=OK)
+            self._cloud_notice("Cloud connected", OK)
             win = self._cloud_win
             if win is not None and win.winfo_exists():
                 win.attach(self.cloud_provider, self.backup_store)
@@ -384,23 +419,31 @@ class App:
             self._cloud_error(f"connect failed: {exc}")
 
     def disconnect_cloud(self) -> None:
+        if self._cloud_operation is not None:
+            self._cloud_notice("Wait for the current cloud action to finish")
+            return
         try:
             config.cloud_token_path().unlink(missing_ok=True)
         except OSError:
             pass
         self.cloud_provider = None
         self.backup_store = None
-        self.ui.notify("Cloud disconnected", color=NOTICE)
         win = self._cloud_win
         if win is not None and win.winfo_exists():
             win.attach(None, None)
             win.set_backups([])
+        self._cloud_notice("Cloud disconnected")
 
     def backup_now(self) -> None:
         store = self.backup_store
         if store is None:
-            self.ui.notify("Cloud not connected", color=NOTICE)
+            self._cloud_notice("Cloud is not connected")
             return
+        if self._cloud_operation is not None:
+            self._cloud_notice("Another cloud action is already in progress")
+            return
+        self._set_cloud_operation("backup")
+        self._cloud_notice("Backing up snippets…", FG)
 
         def work() -> None:
             try:
@@ -415,31 +458,38 @@ class App:
         threading.Thread(target=work, daemon=True, name="snipit-cloud-backup").start()
 
     def _backup_done(self, name: str) -> None:
-        self.ui.notify("Backed up to cloud ✓", color=OK)
-        win = self._cloud_win
-        if win is not None and win.winfo_exists():
-            win.set_status(f"Backed up — {name}")
+        self._set_cloud_operation(None)
+        self._cloud_notice(f"Backup complete: {name}", OK)
+        if self._cloud_win is not None and self._cloud_win.winfo_exists():
             self._cloud_list()
 
     def restore_cloud(self) -> None:
         win = self._cloud_win
+        if self.backup_store is None:
+            self._cloud_notice("Cloud is not connected")
+            return
+        if self._cloud_operation is not None:
+            self._cloud_notice("Another cloud action is already in progress")
+            return
         name = win.selected_backup() if win is not None else ""
         if not name:
-            self.ui.notify("Select a backup to restore", color=NOTICE)
+            self._cloud_notice("Select a backup to restore")
             return
         if not messagebox.askyesno(
                 APP_NAME,
                 f"Restore “{name}”?\n\nLocal changes made after this backup "
                 "will be lost.\nA safety snapshot of the current database is "
                 "kept in the backups folder.",
-                parent=self.root):
+                parent=win or self.root):
             return
         store = self.backup_store
         db_path = self.db.path
+        self._set_cloud_operation("restore")
+        self._cloud_notice(f"Restoring {name}…", FG)
 
         def work() -> None:
             try:
-                tmp = store.prepare_restore(db_path)
+                tmp = store.prepare_restore(name, db_path)
             except Exception as exc:
                 msg = str(exc)
                 self._queue.put(lambda: self._restore_failed(msg))
@@ -449,7 +499,8 @@ class App:
         threading.Thread(target=work, daemon=True, name="snipit-cloud-restore").start()
 
     def _restore_failed(self, msg: str) -> None:
-        self.ui.notify(f"Restore failed: {msg}", color=DANGER)
+        self._set_cloud_operation(None)
+        self._cloud_notice(f"Restore failed: {msg}", DANGER)
         # Make sure a working Database is attached no matter what.
         try:
             self.db.close()
@@ -473,10 +524,9 @@ class App:
         self.db = new_db
         self.ui.db = new_db
         self.ui.refresh()
-        self.ui.notify("Restored from cloud backup ✓", color=OK)
-        win = self._cloud_win
-        if win is not None and win.winfo_exists():
-            win.set_status("Restored from cloud backup ✓")
+        self._set_cloud_operation(None)
+        self._cloud_notice("Restore complete", OK)
+        if self._cloud_win is not None and self._cloud_win.winfo_exists():
             self._cloud_list()
 
     # ------------------------------------------------------------- tray/hotkey

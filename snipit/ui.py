@@ -25,7 +25,7 @@ ACCENT = "#2f6fed"
 ACCENT_D = "#1e56c9"
 BG = "#f6f7f9"
 FG = "#1c1e21"
-MUTED = "#8a8f98"
+MUTED = "#626975"
 BORDER = "#d8dbe0"
 SELECT = "#dbe7ff"
 FG_SELECT = "#0b1b3a"
@@ -34,7 +34,7 @@ NOTICE = "#b4550d"
 OK = "#1e8e3e"
 WHITE = "#ffffff"
 
-PLACEHOLDER = "Search snippets… (type to filter · Esc clears)"
+PLACEHOLDER = "Type a title or phrase"
 
 
 def _looks_like_code(content: str) -> bool:
@@ -47,6 +47,19 @@ def _looks_like_code(content: str) -> bool:
     return any(t in content for t in tokens)
 
 
+def _center_window(window, parent, include_size: bool = False) -> None:
+    window.update_idletasks()
+    width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    x = parent.winfo_rootx() + (parent.winfo_width() - width) // 2
+    y = parent.winfo_rooty() + (parent.winfo_height() - height) // 2
+    x = min(max(0, x), max(0, screen_width - width))
+    y = min(max(0, y), max(0, screen_height - height))
+    size = f"{width}x{height}" if include_size else ""
+    window.geometry(f"{size}+{x}+{y}")
+
+
 # ---------------------------------------------------------------- fonts
 BODY_FONT = SMALL_FONT = TITLE_FONT = CODE_FONT = LIST_FONT = None
 
@@ -55,15 +68,15 @@ def _init_fonts(root: tk.Tk) -> None:
     global BODY_FONT, SMALL_FONT, TITLE_FONT, CODE_FONT, LIST_FONT
     size = int(tkfont.nametofont("TkDefaultFont").cget("size")) or 9
     BODY_FONT = tkfont.nametofont("TkDefaultFont")
-    SMALL_FONT = tkfont.Font(root=root, size=size - 1)
+    SMALL_FONT = tkfont.Font(root=root, size=size)
     TITLE_FONT = tkfont.Font(root=root, size=size + 3, weight="bold")
     CODE_FONT = tkfont.Font(root=root, family="Consolas", size=size)
-    LIST_FONT = tkfont.Font(root=root, family="Consolas", size=size - 1)
+    LIST_FONT = tkfont.Font(root=root, family="Consolas", size=size)
 
 
 # ================================================================ SearchWindow
 class SearchWindow:
-    HINT = ("Enter ⏎ copy · Dbl-click / Ctrl+Enter details · Ctrl+N new · "
+    HINT = ("Enter to copy · Double-click or Ctrl+Enter for details · Ctrl+N new · "
             "Ctrl+E edit · Ctrl+Del delete · Esc hide")
 
     def __init__(self, root: tk.Tk, db, actions: dict):
@@ -73,6 +86,8 @@ class SearchWindow:
 
         self.results = []          # sqlite rows aligned 1:1 with listbox items
         self._search_job = None
+        self._resize_job = None
+        self._render_width = 0
         self._notice_job = None
         self._placeholder = None
 
@@ -100,8 +115,11 @@ class SearchWindow:
     def _build_widgets(self) -> None:
         root = self.root
 
+        tk.Label(root, text="Search snippets", bg=BG, fg=FG, anchor="w",
+                 font=BODY_FONT).pack(fill="x", padx=12, pady=(10, 4))
+
         top = tk.Frame(root, bg=BG)
-        top.pack(fill="x", padx=12, pady=(10, 6))
+        top.pack(fill="x", padx=12, pady=(0, 6))
 
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", lambda *a: self._on_search_changed())
@@ -122,25 +140,30 @@ class SearchWindow:
         self._sync_placeholder()
 
         self.clear_btn = tk.Button(
-            top, text="✕", command=self._clear_search, relief="flat", bg=BG,
+            top, text="Clear", command=self._clear_search, relief="flat", bg=BG,
             activebackground=BORDER, fg=MUTED, activeforeground=FG,
-            font=BODY_FONT, cursor="hand2", width=3,
+            font=BODY_FONT, cursor="hand2", padx=8, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT,
         )
         self.clear_btn.pack(side="left", padx=(4, 0))
 
         self.cloud_btn = tk.Button(
-            top, text="☁", command=self.actions["cloud"], relief="flat", bg=BG,
+            top, text="Cloud", command=self.actions["cloud"], relief="flat", bg=BG,
             activebackground=BORDER, fg=MUTED, activeforeground=FG,
-            font=BODY_FONT, cursor="hand2", width=3,
+            font=BODY_FONT, cursor="hand2", padx=8, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT,
         )
         self.cloud_btn.pack(side="left", padx=(4, 0))
 
         self.add_btn = tk.Button(
-            top, text="＋ Add", command=self.actions["add"], relief="flat",
+            top, text="Add snippet", command=self.actions["add"], relief="flat",
             bg=ACCENT, fg=WHITE, activebackground=ACCENT_D, activeforeground=WHITE,
-            font=BODY_FONT, cursor="hand2", padx=10,
+            font=BODY_FONT, cursor="hand2", padx=10, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT,
         )
         self.add_btn.pack(side="left", padx=(4, 0))
+        for button in (self.clear_btn, self.cloud_btn, self.add_btn):
+            button.bind("<Return>", lambda e, target=button: self._invoke_button(target))
 
         # ---- results list
         list_frame = tk.Frame(root, bg=BG)
@@ -150,7 +173,7 @@ class SearchWindow:
             list_frame, activestyle="none", borderwidth=0, highlightthickness=1,
             highlightbackground=BORDER, selectmode="browse", bg=WHITE, fg=FG,
             font=LIST_FONT, selectbackground=SELECT, selectforeground=FG_SELECT,
-            exportselection=False, relief="flat",
+            exportselection=False, relief="flat", highlightcolor=ACCENT,
         )
         scroll = tk.Scrollbar(list_frame, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=scroll.set)
@@ -170,7 +193,6 @@ class SearchWindow:
     # ------------------------------------------------------------- keys
     def _bind_keys(self) -> None:
         self.root.bind("<Escape>", lambda e: self.actions["escape"]())
-        self.root.bind("<Return>", lambda e: self.copy_selected())
         self.root.bind("<Control-Return>", lambda e: self.open_detail())
         self.root.bind("<Control-n>", lambda e: self.actions["add"]())
         self.root.bind("<Control-e>", lambda e: self.actions["edit"]())
@@ -178,6 +200,7 @@ class SearchWindow:
         # in the listbox is a delete shortcut that never fires.
         self.root.bind("<Control-Delete>", lambda e: self._delete_selected())
 
+        self.search_entry.bind("<Return>", self._copy_selected)
         self.search_entry.bind("<Down>", lambda e: self._move_selection(1))
         self.search_entry.bind("<Up>", lambda e: self._move_selection(-1))
         # Widget bindings run before the Entry class binding, so this sees the
@@ -188,8 +211,19 @@ class SearchWindow:
         # word of the query on the way past.
         self.search_entry.bind("<Control-Delete>", lambda e: self._delete_selected())
 
+        self.listbox.bind("<Return>", self._copy_selected)
         self.listbox.bind("<Double-Button-1>", lambda e: self.open_detail())
         self.listbox.bind("<Delete>", lambda e: self._delete_selected())
+        self.listbox.bind("<Configure>", self._schedule_resize)
+
+    @staticmethod
+    def _invoke_button(button) -> str:
+        button.invoke()
+        return "break"
+
+    def _copy_selected(self, _event=None) -> str:
+        self.copy_selected()
+        return "break"
 
     def _delete_selected(self) -> str:
         self.actions["delete"]()
@@ -216,19 +250,40 @@ class SearchWindow:
             self._search_job = None
         query = self._search_var.get()
         self.results = self.db.search(query, MAX_RESULTS)
-
-        self.listbox.delete(0, "end")
-        width = self.listbox.winfo_width()
-        if width <= 1:
-            width = WINDOW_WIDTH - 40
-        f = tkfont.Font(root=self.root, font=self.listbox.cget("font"))
-        max_chars = max(24, int((width - 28) / max(f.measure("0"), 1)))
-        for i, row in enumerate(self.results):
-            self.listbox.insert("end", self._format_row(i, row, max_chars))
+        self._render_results()
         if self.results:
             self.listbox.selection_set(0)
             self.listbox.activate(0)
         self._update_status()
+
+    def _schedule_resize(self, event=None) -> None:
+        width = event.width if event is not None else self.listbox.winfo_width()
+        if abs(width - self._render_width) < 8:
+            return
+        if self._resize_job:
+            self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(80, self._resize_results)
+
+    def _resize_results(self) -> None:
+        self._resize_job = None
+        self._render_results(preserve_selection=True)
+
+    def _render_results(self, preserve_selection: bool = False) -> None:
+        selected = self.selected_row() if preserve_selection else None
+        top = self.listbox.nearest(0) if preserve_selection and self.listbox.size() else 0
+        width = self.listbox.winfo_width()
+        if width <= 1:
+            width = WINDOW_WIDTH - 40
+        self._render_width = width
+        font = tkfont.Font(root=self.root, font=self.listbox.cget("font"))
+        max_chars = max(24, int((width - 28) / max(font.measure("0"), 1)))
+        self.listbox.delete(0, "end")
+        for i, row in enumerate(self.results):
+            self.listbox.insert("end", self._format_row(i, row, max_chars))
+        if selected is not None:
+            self.select_id(selected["id"])
+            if self.listbox.size():
+                self.listbox.yview(top)
 
     @staticmethod
     def _format_row(index: int, row, max_chars: int) -> str:
@@ -347,7 +402,13 @@ class DetailWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._build()
         self._center_over(root)
+        self.bind("<Return>", self._on_copy_key)
+        self.bind("<Control-e>", self._on_edit_key)
+        self.bind("<Delete>", self._on_delete_key)
+        self.bind("<Control-Delete>", self._on_delete_key)
+        self.bind("<Escape>", lambda e: self.destroy())
         self.grab_set()
+        self.copy_btn.focus_set()
 
     def _build(self) -> None:
         body = tk.Frame(self, bg=BG)
@@ -376,18 +437,26 @@ class DetailWindow(tk.Toplevel):
 
         btns = tk.Frame(body, bg=BG)
         btns.pack(fill="x", pady=(10, 0))
-        tk.Button(btns, text="Copy  ⏎", command=self._on_copy, relief="flat",
-                  bg=ACCENT, fg=WHITE, activebackground=ACCENT_D, activeforeground=WHITE,
-                  font=BODY_FONT, cursor="hand2", padx=14, pady=3).pack(side="left")
-        tk.Button(btns, text="Edit…", command=self._on_edit, relief="flat",
-                  bg=BORDER, fg=FG, activebackground=SELECT, font=BODY_FONT,
-                  cursor="hand2", padx=12, pady=3).pack(side="left", padx=(6, 0))
-        tk.Button(btns, text="Delete", command=self._on_delete, relief="flat",
-                  bg=BG, fg=DANGER, activebackground=SELECT, font=BODY_FONT,
-                  cursor="hand2", padx=12, pady=3).pack(side="left", padx=(6, 0))
-        tk.Button(btns, text="Close", command=self.destroy, relief="flat",
-                  bg=BG, fg=MUTED, activebackground=SELECT, font=BODY_FONT,
-                  cursor="hand2", padx=12, pady=3).pack(side="right")
+        self.copy_btn = tk.Button(
+            btns, text="Copy", command=self._on_copy, relief="flat",
+            bg=ACCENT, fg=WHITE, activebackground=ACCENT_D, activeforeground=WHITE,
+            font=BODY_FONT, cursor="hand2", padx=14, pady=3)
+        self.copy_btn.pack(side="left")
+        self.edit_btn = tk.Button(
+            btns, text="Edit…", command=self._on_edit, relief="flat",
+            bg=BORDER, fg=FG, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=12, pady=3)
+        self.edit_btn.pack(side="left", padx=(6, 0))
+        self.delete_btn = tk.Button(
+            btns, text="Delete", command=self._on_delete, relief="flat",
+            bg=BG, fg=DANGER, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=12, pady=3)
+        self.delete_btn.pack(side="left", padx=(6, 0))
+        self.close_btn = tk.Button(
+            btns, text="Close", command=self.destroy, relief="flat",
+            bg=BG, fg=MUTED, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=12, pady=3)
+        self.close_btn.pack(side="right")
 
     def _on_copy(self) -> None:
         self.actions["copy"](self.row)
@@ -398,14 +467,20 @@ class DetailWindow(tk.Toplevel):
     def _on_delete(self) -> None:
         self.actions["delete"]()
 
+    def _on_copy_key(self, _event=None) -> str:
+        self._on_copy()
+        return "break"
+
+    def _on_edit_key(self, _event=None) -> str:
+        self._on_edit()
+        return "break"
+
+    def _on_delete_key(self, _event=None) -> str:
+        self._on_delete()
+        return "break"
+
     def _center_over(self, parent) -> None:
-        self.update_idletasks()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
-        pw, ph = parent.winfo_width(), parent.winfo_height()
-        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
-        x = max(0, px + (pw - w) // 2)
-        y = max(0, py + (ph - h) // 2)
-        self.geometry(f"+{x}+{y}")
+        _center_window(self, parent)
 
 # ================================================================ CloudWindow
 class CloudWindow(tk.Toplevel):
@@ -420,14 +495,24 @@ class CloudWindow(tk.Toplevel):
         self.actions = actions
         self.provider = provider
         self.store = store
+        self._busy = None
+        self._backup_names = []
         self.title("Cloud backup")
         self.configure(bg=BG)
         self.transient(root)
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.minsize(470, 280)
         self.protocol("WM_DELETE_WINDOW", self.destroy)
         self._build()
         self._center_over(root)
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.backup_list.bind("<Return>", self._restore_key)
+        self.backup_list.bind("<Double-Button-1>", self._restore_key)
         self.grab_set()
+        if self.provider is not None and self.store is not None:
+            self.backup_list.focus_set()
+        else:
+            self.connect_btn.focus_set()
 
     def _build(self) -> None:
         body = tk.Frame(self, bg=BG)
@@ -437,31 +522,40 @@ class CloudWindow(tk.Toplevel):
                                    font=BODY_FONT, wraplength=340, justify="left")
         self.status_lbl.pack(fill="x")
 
-        btns = tk.Frame(body, bg=BG)
-        btns.pack(fill="x", pady=(10, 0))
+        account_actions = tk.Frame(body, bg=BG)
+        account_actions.pack(fill="x", pady=(10, 0))
         self.connect_btn = tk.Button(
-            btns, text="Connect…", command=self.actions["connect"], relief="flat",
+            account_actions, text="Connect…", command=self.actions["connect"], relief="flat",
             bg=ACCENT, fg=WHITE, activebackground=ACCENT_D, activeforeground=WHITE,
-            font=BODY_FONT, cursor="hand2", padx=10,
-        )
+            font=BODY_FONT, cursor="hand2", padx=10, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT)
         self.connect_btn.pack(side="left")
         self.disconnect_btn = tk.Button(
-            btns, text="Disconnect", command=self.actions["disconnect"], relief="flat",
+            account_actions, text="Disconnect", command=self.actions["disconnect"], relief="flat",
             bg=BG, fg=MUTED, activebackground=SELECT, font=BODY_FONT,
-            cursor="hand2", padx=10,
-        )
+            cursor="hand2", padx=10, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT)
         self.disconnect_btn.pack(side="left", padx=(6, 0))
+        self.close_btn = tk.Button(
+            account_actions, text="Close", command=self.destroy, relief="flat",
+            bg=BG, fg=MUTED, activebackground=SELECT, font=BODY_FONT,
+            cursor="hand2", padx=10, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT)
+        self.close_btn.pack(side="right")
+
+        backup_actions = tk.Frame(body, bg=BG)
+        backup_actions.pack(fill="x", pady=(8, 0))
         self.backup_btn = tk.Button(
-            btns, text="Back up now", command=self.actions["backup"], relief="flat",
+            backup_actions, text="Back up now", command=self.actions["backup"], relief="flat",
             bg=BG, fg=FG, activebackground=SELECT, font=BODY_FONT,
-            cursor="hand2", padx=10,
-        )
-        self.backup_btn.pack(side="left", padx=(6, 0))
+            cursor="hand2", padx=10, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT)
+        self.backup_btn.pack(side="left")
         self.restore_btn = tk.Button(
-            btns, text="Restore selected", command=self.actions["restore"], relief="flat",
+            backup_actions, text="Restore selected", command=self.actions["restore"], relief="flat",
             bg=BG, fg=DANGER, activebackground=SELECT, font=BODY_FONT,
-            cursor="hand2", padx=10,
-        )
+            cursor="hand2", padx=10, highlightthickness=2,
+            highlightbackground=BG, highlightcolor=ACCENT)
         self.restore_btn.pack(side="left", padx=(6, 0))
 
         list_frame = tk.Frame(body, bg=WHITE, highlightthickness=1,
@@ -476,7 +570,12 @@ class CloudWindow(tk.Toplevel):
         self.backup_list.configure(yscrollcommand=scroll.set)
         self.backup_list.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
+        self.backup_list.bind("<<ListboxSelect>>", lambda e: self._refresh_state())
         self._refresh_state()
+        self.set_status(
+            "Connected. Cloud backup is ready."
+            if self.provider is not None and self.store is not None
+            else "Not connected. Connect with your Google account.")
 
     def attach(self, provider, store) -> None:
         """Update the connected provider/store and re-render button state."""
@@ -486,36 +585,53 @@ class CloudWindow(tk.Toplevel):
 
     def _refresh_state(self) -> None:
         connected = self.provider is not None and self.store is not None
-        self.connect_btn.config(state="disabled" if connected else "normal")
-        self.disconnect_btn.config(state="normal" if connected else "disabled")
-        self.backup_btn.config(state="normal" if connected else "disabled")
-        self.restore_btn.config(state="normal" if connected else "disabled")
-        self.set_status(
-            "Connected — cloud backup ready" if connected
-            else "Not connected — connect with your Google account")
+        idle = self._busy is None
+        selected = bool(self.backup_list.curselection())
+        self.connect_btn.config(
+            text="Connecting…" if self._busy == "connect" else "Connect…",
+            state="normal" if not connected and idle else "disabled")
+        self.disconnect_btn.config(
+            state="normal" if connected and idle else "disabled")
+        self.backup_btn.config(
+            text="Backing up…" if self._busy == "backup" else "Back up now",
+            state="normal" if connected and idle else "disabled")
+        self.restore_btn.config(
+            text="Restoring…" if self._busy == "restore" else "Restore selected",
+            state="normal" if connected and idle and selected else "disabled")
+
+    def set_busy(self, operation=None) -> None:
+        self._busy = operation
+        self._refresh_state()
 
     def set_status(self, text: str, color: str = FG) -> None:
         self.status_lbl.config(text=text, fg=color)
 
     def set_backups(self, metas) -> None:
+        selected = self.selected_backup()
         self.backup_list.delete(0, "end")
+        self._backup_names = [m.name for m in metas]
         for m in metas:
             self.backup_list.insert("end", f"{m.name}   ({m.size:,} B)")
+        if selected in self._backup_names:
+            index = self._backup_names.index(selected)
+            self.backup_list.selection_set(index)
+            self.backup_list.activate(index)
+            self.backup_list.see(index)
+        self._refresh_state()
 
     def selected_backup(self) -> str:
         sel = self.backup_list.curselection()
-        if not sel:
+        if not sel or sel[0] >= len(self._backup_names):
             return ""
-        return self.backup_list.get(sel[0]).split("   ")[0]
+        return self._backup_names[sel[0]]
+
+    def _restore_key(self, _event=None) -> str:
+        if str(self.restore_btn.cget("state")) == "normal":
+            self.actions["restore"]()
+        return "break"
 
     def _center_over(self, parent) -> None:
-        self.update_idletasks()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
-        pw, ph = parent.winfo_width(), parent.winfo_height()
-        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
-        x = max(0, px + (pw - w) // 2)
-        y = max(0, py + (ph - h) // 2)
-        self.geometry(f"+{x}+{y}")
+        _center_window(self, parent)
 
 
 # ================================================================ EditWindow
@@ -632,13 +748,7 @@ class EditWindow(tk.Toplevel):
         self.destroy()
 
     def _center_over(self, parent) -> None:
-        self.update_idletasks()
-        px, py = parent.winfo_rootx(), parent.winfo_rooty()
-        pw, ph = parent.winfo_width(), parent.winfo_height()
-        w, h = self.winfo_reqwidth(), self.winfo_reqheight()
-        x = max(0, px + (pw - w) // 2)
-        y = max(0, py + (ph - h) // 2)
-        self.geometry(f"{w}x{h}+{x}+{y}")
+        _center_window(self, parent, include_size=True)
 
 
 

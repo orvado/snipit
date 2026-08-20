@@ -105,18 +105,20 @@ class BackupStore:
         return dest
 
     def restore(self, live_db, open_factory) -> object:
-        """Convenience: prepare (worker-safe) then apply (main-thread only)."""
-        tmp = self.prepare_restore(live_db.path)
+        """Convenience: restore the newest available backup."""
+        backups = self.list_backups()
+        if not backups:
+            raise ValueError("no cloud backups are available")
+        tmp = self.prepare_restore(backups[0].name, live_db.path)
         return self.apply_restore(live_db, tmp, open_factory)
 
-    def prepare_restore(self, db_path: Path) -> Path:
-        """Safety snapshot + download + verify. Worker-thread safe: never
-        touches the live connection. Returns the verified temp file."""
+    def prepare_restore(self, name: str, db_path: Path) -> Path:
+        """Safety snapshot + named download + verify. Worker-thread safe."""
         db_path = Path(db_path)
         self._pre_restore_snapshot(db_path)
         tmp = db_path.with_name(f".restore_{uuid4().hex}.db")
         try:
-            self.download_verified(self.list_backups()[0].name, tmp)
+            self.download_verified(name, tmp)
         except Exception:
             tmp.unlink(missing_ok=True)
             raise

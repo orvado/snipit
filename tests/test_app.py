@@ -48,7 +48,8 @@ def main():
         before = app.db.count()
         app.backup_store.backup()
         app.db.add("cloud-restore-probe", "unique probe content")
-        tmp = app.backup_store.prepare_restore(app.db.path)
+        name = app.backup_store.list_backups()[0].name
+        tmp = app.backup_store.prepare_restore(name, app.db.path)
         app._apply_restore(tmp)
         results["restored"] = (app.db.count() == before
                                and not app.db.search("cloud-restore-probe"))
