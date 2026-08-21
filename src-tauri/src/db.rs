@@ -106,7 +106,7 @@ impl Database {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(path.as_ref()).map_err(|e| e.to_string())?;
-        conn.execute("PRAGMA journal_mode=WAL", [])
+        conn.pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| e.to_string())?;
 
         let existing: std::collections::HashSet<String> = conn
@@ -258,6 +258,7 @@ impl Database {
         Ok(rows)
     }
 
+    #[allow(dead_code)]
     pub fn count(&self) -> Result<i64, String> {
         self.conn
             .query_row("SELECT COUNT(*) FROM snippets", [], |r| r.get(0))
@@ -316,5 +317,6 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn close(self) {}
 }

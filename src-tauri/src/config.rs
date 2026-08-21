@@ -8,6 +8,7 @@ pub const MAX_CONTENT_LEN: usize = 32768;
 pub const MAX_HEADING_LEN: usize = 120;
 pub const MAX_RESULTS: usize = 300;
 pub const MAX_BACKUPS: usize = 10;
+#[allow(dead_code)]
 pub const EXCHANGE_TIMEOUT_S: u64 = 30;
 
 pub const WINDOW_WIDTH: f64 = 720.0;
@@ -16,7 +17,9 @@ pub const MARGIN_TOP: f64 = 140.0;
 
 pub const CLIPBOARD_CRLF: bool = true;
 
+#[allow(dead_code)]
 pub const IPC_PORT: u16 = 48731;
+#[allow(dead_code)]
 pub const MUTEX_NAME: &str = "Local\\SnipIt.SingleInstance.v1";
 
 pub const CLOUD_SCOPES: &[&str] = &["https://www.googleapis.com/auth/drive.appdata"];

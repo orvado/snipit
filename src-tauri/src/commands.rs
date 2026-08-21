@@ -1,5 +1,5 @@
 use serde::Serialize;
-use tauri::{Emitter, State};
+use tauri::State;
 
 use crate::config;
 use crate::db::Snippet;
@@ -306,12 +306,7 @@ pub fn restore_backup(name: String, state: State<AppState>) -> Result<(), String
         let _ = db.path.clone();
         drop(db);
         std::mem::drop(state);
-        std::fs::rename(&tmp, &db_path).map_err(|e| e.to_string())?;
-        for suffix in ["-wal", "-shm"] {
-            let p = std::path::PathBuf::from(format!("{}{suffix}", db_path.to_string_lossy()));
-            let _ = std::fs::remove_file(p);
-        }
-        return Ok(());
+        return store.apply_restore(&db_path, &tmp);
     }
 }
 

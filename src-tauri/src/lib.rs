@@ -182,13 +182,13 @@ pub fn run() {
                 }
             });
 
-            // First run: show once
-            let state: tauri::State<state::AppState> = app.state();
-            if state.first_run {
-                let w = app.get_webview_window("main").unwrap();
-                let _ = w.show();
-                let _ = w.set_focus();
-            }
+            // Show main window on launch — the frontend handles its own
+            // hidden/visible lifecycle after that (Esc hides, tray/hotkey shows).
+            // Previously this was gated on first_run, which left the window
+            // invisible after the initial seed and forced users to find the tray.
+            let w = app.get_webview_window("main").unwrap();
+            let _ = w.show();
+            let _ = w.set_focus();
 
             Ok(())
         });

@@ -158,7 +158,7 @@ function handleEscape() {
 }
 
 // ---- Detail dialog
-const detailDialog = el<HTMLDialogElement>("detail-dialog");
+let detailDialog!: HTMLDialogElement;
 function openDetail(row: Snippet) {
   void api.markUsed(row.id).then(() => void doSearch());
   el("detail-heading").textContent = (row.heading || "").trim() || "(no title)";
@@ -171,7 +171,7 @@ function openDetail(row: Snippet) {
 }
 
 // ---- Edit dialog
-const editDialog = el<HTMLDialogElement>("edit-dialog");
+let editDialog!: HTMLDialogElement;
 let editMode: { id: number | null } = { id: null };
 
 function openAdd() {
@@ -255,7 +255,7 @@ async function deleteSelected() {
 }
 
 // ---- Cloud dialog
-const cloudDialog = el<HTMLDialogElement>("cloud-dialog");
+let cloudDialog!: HTMLDialogElement;
 let cloudBusy: string | null = null;
 let cloudBackups: BackupMeta[] = [];
 let selectedBackupName = "";
@@ -498,6 +498,9 @@ function buildShell() {
 
 async function init() {
   buildShell();
+  detailDialog = el<HTMLDialogElement>("detail-dialog");
+  editDialog = el<HTMLDialogElement>("edit-dialog");
+  cloudDialog = el<HTMLDialogElement>("cloud-dialog");
   config = await api.getConfig();
 
   const searchInput = el<HTMLInputElement>("search");
