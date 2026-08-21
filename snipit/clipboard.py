@@ -1,35 +1,33 @@
-"""Clipboard writes that outlive the process.
+"""Cross-platform clipboard writes that outlive the process.
 
-Tk does not put data *on* the Windows clipboard — it claims ownership and
-renders the text on demand, so everything copied vanishes the moment SnipIt
-exits. Handing the text to Win32 ourselves stores a real ``CF_UNICODETEXT``
-block, which survives our exit and shows up in clipboard history (Win+V).
+Windows:  Win32 CF_UNICODETEXT block (survives exit, shows in Win+V).
+macOS:    pbcopy / NSPasteboard (survives exit, shows in clipboard history).
+Linux:    xclip/xsel if available, otherwise Tk fallback.
+Tk fallback only lends the clipboard while the app runs.
 
-``copy()`` falls back to Tk if the Win32 path is unavailable or fails, so the
-app still works (with the old caveat) on a non-Windows box.
+``copy()`` always tries the native path first and falls back to Tk.
 """
 from __future__ import annotations
 
 import ctypes
+import shutil
+import subprocess
 import sys
 import time
 from ctypes import wintypes
 
 from .config import CLIPBOARD_CRLF
+from .platform import IS_MACOS, IS_WINDOWS
 
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
 
-# Another application can hold the clipboard open for a moment; retry briefly.
 _OPEN_RETRIES = 10
 _RETRY_DELAY = 0.01
 
-IS_WINDOWS = sys.platform == "win32"
-
 
 def _to_crlf(text: str) -> str:
-    """Windows clipboard formats are documented as CRLF-delimited; some legacy
-    Win32 edit controls run LF-only text together into one line."""
+    """Windows clipboard formats are documented as CRLF-delimited."""
     return text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")
 
 
@@ -81,15 +79,73 @@ def _set_windows(text: str) -> None:
         try:
             ctypes.memmove(ptr, data, len(data))
         finally:
-            kernel32.GlobalUnlock(handle)  # returns 0 on success too; don't check
+            kernel32.GlobalUnlock(handle)
         if not user32.SetClipboardData(CF_UNICODETEXT, handle):
             raise ctypes.WinError(ctypes.get_last_error())
-        handle = None  # the system owns the block now — must not free it
+        handle = None
     finally:
         if handle:
             kernel32.GlobalFree(handle)
         user32.CloseClipboard()
 
+
+# ------------------------------------------------------------------ macOS
+
+def _set_macos(text: str) -> None:
+    """Copy via pbcopy (always present on macOS). Raises on failure."""
+    # pbcopy reads stdin and puts it on the general pasteboard
+    proc = subprocess.run(
+        ["pbcopy"],
+        input=text.encode("utf-8"),
+        timeout=2,
+        check=True,
+    )
+    # Also try NSPasteboard via AppKit if available for richer types,
+    # but pbcopy already suffices for plain text persistence.
+
+
+def _get_macos() -> str:
+    try:
+        out = subprocess.run(["pbpaste"], capture_output=True, timeout=2, check=True)
+        return out.stdout.decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+# ------------------------------------------------------------------ Linux
+
+def _set_linux(text: str) -> bool:
+    """Try xclip / xsel; return True if one succeeded."""
+    encoded = text.encode("utf-8")
+    for cmd in (["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            subprocess.run(cmd, input=encoded, timeout=2, check=True)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _get_linux(tk_widget=None) -> str:
+    for cmd in (["xclip", "-selection", "clipboard", "-o"], ["xsel", "--clipboard", "--output"]):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            out = subprocess.run(cmd, capture_output=True, timeout=2, check=True)
+            return out.stdout.decode("utf-8", "replace")
+        except Exception:
+            continue
+    if tk_widget is not None:
+        try:
+            return tk_widget.clipboard_get()
+        except Exception:
+            pass
+    return ""
+
+
+# ------------------------------------------------------------------ public API
 
 def copy(text: str, tk_widget=None) -> bool:
     """Put *text* on the clipboard.
@@ -97,7 +153,8 @@ def copy(text: str, tk_widget=None) -> bool:
     Returns True when the text was handed to the OS and will therefore outlive
     this process; False when only the Tk fallback was available.
     """
-    if CLIPBOARD_CRLF:
+    # Only Windows historically needs CRLF normalization
+    if CLIPBOARD_CRLF and IS_WINDOWS:
         text = _to_crlf(text)
 
     if IS_WINDOWS:
@@ -105,40 +162,73 @@ def copy(text: str, tk_widget=None) -> bool:
             _set_windows(text)
             return True
         except OSError:
-            pass  # fall through to Tk rather than losing the copy entirely
+            pass
+    elif IS_MACOS:
+        try:
+            _set_macos(text)
+            return True
+        except OSError:
+            pass
+        except subprocess.CalledProcessError:
+            pass
+        except FileNotFoundError:
+            pass
+    else:
+        # Linux / other Unix
+        try:
+            if _set_linux(text):
+                return True
+        except Exception:
+            pass
 
     if tk_widget is not None:
-        tk_widget.clipboard_clear()
-        tk_widget.clipboard_append(text)
-        tk_widget.update_idletasks()
+        try:
+            tk_widget.clipboard_clear()
+            tk_widget.clipboard_append(text)
+            tk_widget.update_idletasks()
+        except Exception:
+            pass
+        return False
     return False
 
 
-def paste() -> str:
-    """Read UTF-16 text off the clipboard (used by 'New snippet from clipboard'
-    style flows and by the tests, which restore what they borrowed)."""
-    if not IS_WINDOWS:
-        return ""
-    user32, kernel32 = _win_api()
-    user32.GetClipboardData.argtypes = [wintypes.UINT]
-    user32.GetClipboardData.restype = wintypes.HANDLE
-
-    for _ in range(_OPEN_RETRIES):
-        if user32.OpenClipboard(None):
-            break
-        time.sleep(_RETRY_DELAY)
-    else:
-        return ""
-    try:
-        handle = user32.GetClipboardData(CF_UNICODETEXT)
-        if not handle:
-            return ""
-        ptr = kernel32.GlobalLock(handle)
-        if not ptr:
-            return ""
+def paste(tk_widget=None) -> str:
+    """Read text off the clipboard."""
+    if IS_WINDOWS:
         try:
-            return ctypes.c_wchar_p(ptr).value or ""
-        finally:
-            kernel32.GlobalUnlock(handle)
-    finally:
-        user32.CloseClipboard()
+            user32, kernel32 = _win_api()
+            user32.GetClipboardData.argtypes = [wintypes.UINT]
+            user32.GetClipboardData.restype = wintypes.HANDLE
+            for _ in range(_OPEN_RETRIES):
+                if user32.OpenClipboard(None):
+                    break
+                time.sleep(_RETRY_DELAY)
+            else:
+                return ""
+            try:
+                handle = user32.GetClipboardData(CF_UNICODETEXT)
+                if not handle:
+                    return ""
+                ptr = kernel32.GlobalLock(handle)
+                if not ptr:
+                    return ""
+                try:
+                    return ctypes.c_wchar_p(ptr).value or ""
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        except Exception:
+            return ""
+    elif IS_MACOS:
+        text = _get_macos()
+        if text:
+            return text
+        if tk_widget is not None:
+            try:
+                return tk_widget.clipboard_get()
+            except Exception:
+                return ""
+        return ""
+    else:
+        return _get_linux(tk_widget)

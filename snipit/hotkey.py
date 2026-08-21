@@ -1,9 +1,23 @@
-"""Global hotkey support built on the `keyboard` package."""
+"""Global hotkey support built on the ``keyboard`` package.
+
+Cross-platform notes:
+- Windows: low-level hook, works unless a UAC-elevated window has focus.
+- macOS: requires Accessibility permission + Input Monitoring; without it the
+  hook install raises.  The error is surfaced via ``error_callback`` so the
+  app can fall back to the tray icon and explain to the user.
+- Linux: requires root or ``/dev/input`` access on some distros.
+"""
 from __future__ import annotations
 
+import sys
 import threading
 
-import keyboard
+try:
+    import keyboard  # type: ignore
+except Exception:  # pragma: no cover - import may fail on minimal installs
+    keyboard = None  # type: ignore
+
+from .platform import IS_MACOS
 
 
 class Hotkey:
@@ -21,11 +35,24 @@ class Hotkey:
     def start(self) -> None:
         if self._thread is not None:
             return
+        if keyboard is None:
+            self._error(RuntimeError("keyboard package not available"))
+            return
 
         def runner() -> None:
             try:
-                self._handler = keyboard.add_hotkey(self.combo, self._callback, suppress=True)
+                # suppress is not supported on macOS darwin in some keyboard versions
+                kwargs = {}
+                if not IS_MACOS:
+                    kwargs["suppress"] = True
+                self._handler = keyboard.add_hotkey(self.combo, self._callback, **kwargs)
             except Exception as exc:  # hook installation can fail (permissions etc.)
+                # Enrich macOS error with actionable hint
+                if IS_MACOS and "permission" in str(exc).lower():
+                    exc = RuntimeError(
+                        f"{exc} — grant Accessibility + Input Monitoring permission "
+                        "to SnipIt/Terminal in System Settings → Privacy & Security"
+                    )
                 self._error(exc)
                 return
             self._stop.wait()

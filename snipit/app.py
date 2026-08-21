@@ -28,6 +28,7 @@ from .oauth import (
     parse_redirect,
     refresh_access_token,
 )
+from .platform import IS_MACOS, IS_WINDOWS
 from .tray import TrayIcon
 from .ui import CloudWindow, DetailWindow, EditWindow, SearchWindow
 from .ui import DANGER, FG, NOTICE, OK
@@ -99,9 +100,28 @@ class App:
     def show(self) -> None:
         self.root.deiconify()  # also restores a minimised ("iconic") window
         self.root.lift()
-        self.root.attributes("-topmost", True)
+        try:
+            self.root.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        # macOS: ensure the app is brought to front even if not active
+        if IS_MACOS:
+            try:
+                self.root.attributes("-topmost", False)
+                self.root.attributes("-topmost", True)
+                # After a short delay drop topmost so other windows can cover it
+                self.root.after(1500, lambda: self._drop_topmost())
+            except tk.TclError:
+                pass
         self.root.focus_force()
         self.ui.focus_search()
+
+    def _drop_topmost(self) -> None:
+        try:
+            if self._is_visible():
+                self.root.attributes("-topmost", False)
+        except tk.TclError:
+            pass
 
     def hide(self) -> None:
         self._cancel_auto_hide()
@@ -133,7 +153,7 @@ class App:
 
     # ------------------------------------------------------------- copy flow
     def copy(self, row) -> None:
-        # Hands the text to Win32 so it outlives SnipIt; falls back to Tk
+        # Hands the text to the OS so it outlives SnipIt; falls back to Tk
         # (which only lends the clipboard while we run) if that fails.
         persisted = clipboard.copy(row["content"], self.root)
         self.db.mark_used(row["id"])   # copying makes this the MRU snippet
@@ -550,10 +570,15 @@ class App:
 
     def _hotkey_error(self, exc) -> None:
         print(f"[SnipIt] global hotkey unavailable: {exc}", file=sys.stderr)
+        hint = ""
+        if IS_MACOS:
+            hint = ("\n\nOn macOS, grant Accessibility and Input Monitoring "
+                    "permission in System Settings → Privacy & Security → "
+                    "Accessibility, then restart SnipIt.")
         self._queue.put(lambda: messagebox.showwarning(
             APP_NAME,
-            f"Could not register the global hotkey “{config.DEFAULT_HOTKEY}”:\n{exc}\n\n"
-            "Use the system tray icon instead."))
+            f"Could not register the global hotkey “{config.DEFAULT_HOTKEY}”:\n{exc}{hint}\n\n"
+            "Use the tray / menu-bar icon instead."))
 
     # ------------------------------------------------------------- plumbing
     def _poll(self) -> None:
@@ -735,38 +760,58 @@ def _ping_running_instance() -> None:
 
 
 _instance_mutex = None
+_instance_lock_file = None
 
 
 def _already_running() -> bool:
     """True when another SnipIt owns this session.
 
-    Uses a named mutex rather than the IPC port, so an unrelated process
-    sitting on port 48731 can no longer masquerade as "SnipIt is running".
-    The handle is parked in a module global to keep it alive for our lifetime.
+    Windows: named mutex (session-local) — an unrelated process on the IPC
+    port cannot masquerade as SnipIt.
+
+    macOS/Linux: file lock in the data dir (fcntl) + IPC port probe as a
+    fallback when fcntl is unavailable (e.g. no data dir yet). The lock
+    file handle is kept alive in a module global.
     """
-    global _instance_mutex
-    if sys.platform != "win32":
-        srv = _try_bind_ipc()  # best effort elsewhere
+    global _instance_mutex, _instance_lock_file
+    if IS_WINDOWS:
+        import ctypes
+        from ctypes import wintypes
+
+        ERROR_ALREADY_EXISTS = 183
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        handle = kernel32.CreateMutexW(None, False, config.MUTEX_NAME)
+        if not handle:
+            return False  # cannot tell; let the app start rather than block it
+        if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return True
+        _instance_mutex = handle
+        return False
+
+    # POSIX: try file lock first
+    try:
+        import fcntl  # type: ignore
+        lock_path = config.data_dir() / ".snipit.lock"
+        fh = open(lock_path, "a+")
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            return True
+        _instance_lock_file = fh  # keep handle alive
+        # Also probe IPC port: if port is busy but lock is free, let start
+        # proceed (stale port from unrelated process).
+        return False
+    except Exception:
+        # fcntl unavailable (or data_dir not writable) — fall back to port
+        srv = _try_bind_ipc()
         if srv is None:
             return True
         srv.close()
         return False
-
-    import ctypes
-    from ctypes import wintypes
-
-    ERROR_ALREADY_EXISTS = 183
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
-    handle = kernel32.CreateMutexW(None, False, config.MUTEX_NAME)
-    if not handle:
-        return False  # cannot tell; let the app start rather than block it
-    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-        kernel32.CloseHandle(handle)
-        return True
-    _instance_mutex = handle
-    return False
 
 
 def _remove_database() -> None:

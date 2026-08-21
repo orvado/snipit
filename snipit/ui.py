@@ -66,12 +66,20 @@ BODY_FONT = SMALL_FONT = TITLE_FONT = CODE_FONT = LIST_FONT = None
 
 def _init_fonts(root: tk.Tk) -> None:
     global BODY_FONT, SMALL_FONT, TITLE_FONT, CODE_FONT, LIST_FONT
+    import sys
     size = int(tkfont.nametofont("TkDefaultFont").cget("size")) or 9
     BODY_FONT = tkfont.nametofont("TkDefaultFont")
     SMALL_FONT = tkfont.Font(root=root, size=size)
     TITLE_FONT = tkfont.Font(root=root, size=size + 3, weight="bold")
-    CODE_FONT = tkfont.Font(root=root, family="Consolas", size=size)
-    LIST_FONT = tkfont.Font(root=root, family="Consolas", size=size)
+    # Cross-platform monospace: Consolas (Windows), Menlo (macOS), DejaVu Sans Mono (Linux)
+    if sys.platform == "darwin":
+        mono = "Menlo"
+    elif sys.platform == "win32":
+        mono = "Consolas"
+    else:
+        mono = "DejaVu Sans Mono"
+    CODE_FONT = tkfont.Font(root=root, family=mono, size=size)
+    LIST_FONT = tkfont.Font(root=root, family=mono, size=size)
 
 
 # ================================================================ SearchWindow

@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+from .platform import IS_MACOS, IS_WINDOWS
 
 APP_NAME = "SnipIt"
 APP_VERSION = "0.1.0"
 
 # Global hotkey that summons / hides the window (syntax: the `keyboard` library).
-DEFAULT_HOTKEY = os.environ.get("SNIPIT_HOTKEY", "ctrl+alt+s")
+# On macOS the default is Cmd+Alt+S (⌘+⌥+S); on Windows/Linux Ctrl+Alt+S.
+if IS_MACOS:
+    DEFAULT_HOTKEY = os.environ.get("SNIPIT_HOTKEY", "command+alt+s")
+else:
+    DEFAULT_HOTKEY = os.environ.get("SNIPIT_HOTKEY", "ctrl+alt+s")
 
 # Keep the window open for this long after a copy, then auto-hide.
 # The user can press Esc during this window to cancel the auto-hide.
@@ -35,6 +42,9 @@ IPC_PORT = 48731
 # only carries the "come to the front" signal). Session-local on purpose: two
 # users switched between accounts each get their own instance and own database.
 MUTEX_NAME = "Local\\SnipIt.SingleInstance.v1"
+
+# macOS bundle identifier (for future py2app / native packaging)
+MACOS_BUNDLE_ID = "com.snipit.snipit"
 
 # Window geometry.
 WINDOW_WIDTH = 720
@@ -68,9 +78,27 @@ def cloud_token_path() -> Path:
 
 def data_dir() -> Path:
     base = os.environ.get("SNIPIT_DATA_DIR")
-    if not base:
+    if base:
+        p = Path(base)
+        # Tests set SNIPIT_DATA_DIR to a temp dir; preserve legacy behaviour
+        # where data_dir() == $SNIPIT_DATA_DIR/SnipIt unless the var already
+        # ends with SnipIt.
+        if p.name != "SnipIt":
+            p = p / "SnipIt"
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    if IS_WINDOWS:
         base = os.environ.get("APPDATA") or str(Path.home())
-    p = Path(base) / "SnipIt"
+        p = Path(base) / "SnipIt"
+    elif IS_MACOS:
+        p = Path.home() / "Library" / "Application Support" / "SnipIt"
+    else:
+        # Linux / XDG
+        xdg = os.environ.get("XDG_DATA_HOME")
+        if xdg:
+            p = Path(xdg) / "snipit"
+        else:
+            p = Path.home() / ".local" / "share" / "snipit"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
