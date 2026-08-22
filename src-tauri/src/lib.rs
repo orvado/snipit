@@ -10,17 +10,29 @@ mod state;
 use tauri::{Emitter, Manager};
 
 fn position_window(window: &tauri::WebviewWindow) {
-    if let Ok(Some(monitor)) = window.current_monitor() {
+    // Try to center horizontally and place near top (MARGIN_TOP).
+    // On macOS current_monitor() can be None when the window is still hidden,
+    // so fall back to logical centering via the window itself.
+    let (sw, sh) = if let Ok(Some(monitor)) = window.current_monitor() {
         let size = monitor.size();
         let scale = monitor.scale_factor();
-        let sw = size.width as f64 / scale;
-        let sh = size.height as f64 / scale;
-        let w = config::WINDOW_WIDTH.min((sw - 24.0).max(320.0));
-        let h = config::WINDOW_HEIGHT.min((sh - 120.0).max(240.0));
-        let x = (sw - w) / 2.0;
-        let y = config::MARGIN_TOP.min((sh - h - 80.0).max(0.0));
-        let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w, height: h }));
-        let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+        (size.width as f64 / scale, size.height as f64 / scale)
+    } else {
+        // Fallback: assume a reasonable screen if monitor query fails (e.g. hidden window on macOS)
+        // The window will still be centered via set_position; tauri will clamp to screen.
+        (1440.0, 900.0)
+    };
+    let w = config::WINDOW_WIDTH.min((sw - 24.0).max(320.0));
+    let h = config::WINDOW_HEIGHT.min((sh - 120.0).max(240.0));
+    let x = (sw - w) / 2.0;
+    let y = config::MARGIN_TOP.min((sh - h - 80.0).max(0.0));
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize { width: w, height: h }));
+    let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+    // Ensure the window can appear on macOS even if it was created hidden
+    // (visible:false in tauri.conf.json). The setup block below calls show(), but
+    // this centers the window if no monitor was found.
+    if window.current_monitor().is_err() || window.current_monitor().unwrap_or(None).is_none() {
+        let _ = window.center();
     }
 }
 
@@ -196,9 +208,23 @@ pub fn run() {
     builder
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { api, .. } => {
                 api.prevent_exit();
             }
+            // macOS: clicking the Dock icon when no windows are visible should
+            // re-show the main window. Without this, the app appears running
+            // (menu shows “Hide SnipIt”) but no window is visible.
+            tauri::RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } if !has_visible_windows => {
+                if let Some(win) = app_handle.get_webview_window("main") {
+                    let _ = win.unminimize();
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+            _ => {}
         });
 }

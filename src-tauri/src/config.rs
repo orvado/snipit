@@ -25,7 +25,19 @@ pub const MUTEX_NAME: &str = "Local\\SnipIt.SingleInstance.v1";
 pub const CLOUD_SCOPES: &[&str] = &["https://www.googleapis.com/auth/drive.appdata"];
 
 pub fn default_hotkey() -> String {
-    std::env::var("SNIPIT_HOTKEY").unwrap_or_else(|_| "ctrl+alt+s".to_string())
+    if let Ok(val) = std::env::var("SNIPIT_HOTKEY") {
+        if !val.is_empty() {
+            return val;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "command+alt+s".to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "ctrl+alt+s".to_string()
+    }
 }
 
 pub fn tauri_hotkey() -> String {

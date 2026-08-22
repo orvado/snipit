@@ -1,9 +1,9 @@
 # SnipIt
 
-A **very minimalist, lightweight text snippet manager** for Windows.
+A **very minimalist, lightweight text snippet manager** for **Windows, macOS and Linux**.
 
 Keep frequently used snippets — Windows commands, chat prompts, code — one hotkey
-away. Press **Ctrl+Alt+S**, type a few letters to progressively narrow the list,
+away. Press **Ctrl+Alt+S** (Windows/Linux) or **⌘+⌥+S** (macOS, `Cmd+Alt+S`), type a few letters to progressively narrow the list,
 press **Enter** to copy, and the window gets out of your way.
 
 ## Features
@@ -14,10 +14,10 @@ press **Enter** to copy, and the window gets out of your way.
   matches, and most-recently-used order breaks ties.
 - **Single-line results** — heading + content preview on one row for fast
   visual scanning; arrow keys / typing work right from the search box.
-- **Global hotkey** — `Ctrl+Alt+S` summons the window from anywhere; it hides
+- **Global hotkey** — `Ctrl+Alt+S` (Windows/Linux) or `⌘+⌥+S` (`Cmd+Alt+S` on macOS) summons the window from anywhere; it hides
   again only when it already has your attention, so the hotkey never makes a
-  minimised or buried window disappear.
-- **System tray** — lives quietly in the tray (Show / New snippet… / Quit).
+  minimised or buried window disappear. Override with `SNIPIT_HOTKEY` (e.g. `Ctrl+Shift+Space`). On macOS grant **Accessibility + Input Monitoring** in *System Settings → Privacy & Security* or the hotkey silently fails and tray remains the fallback.
+- **System tray** — lives quietly in the tray/menu bar (Show / New snippet… / Cloud… / Back up now… / Quit). On macOS the tray appears in the menu bar; left-click also shows the window.
 - **Copy anywhere** — press `Enter` on a result, or use the Copy button in the
   detail window (essential for multi-line snippets). Copies are handed to
   Windows itself, so they survive quitting SnipIt and show up in clipboard
@@ -27,7 +27,7 @@ press **Enter** to copy, and the window gets out of your way.
 - **Detail window** — double-click (or Ctrl+Enter) any result for a read-only
   view with Copy / Edit / Delete. Code-ish snippets render in a monospace font.
 - **Add / edit / delete** — `Ctrl+N`, `Ctrl+E`, `Ctrl+Del`; or the tray menu.
-- **SQLite storage** — one small `.db` file in `%APPDATA%\SnipIt\`.
+- **SQLite storage** — one small `.db` file: `%APPDATA%\SnipIt\` (Windows), `~/Library/Application Support/SnipIt/` (macOS), `~/.local/share/snipit` or `$XDG_DATA_HOME/snipit` (Linux). Override with `SNIPIT_DATA_DIR`.
 - **MRU results** — the empty search box browses most-recently-used first:
   copying a snippet (or viewing it in the detail window) brings it to the
   top of the list; newly added snippets start at the top until something
@@ -43,38 +43,47 @@ press **Enter** to copy, and the window gets out of your way.
 
 ## Install
 
-Requires **Python 3.10+** on Windows.
+Requires **Python 3.10+** on **Windows, macOS or Linux**.
 
-```powershell
+```bash
+# All platforms:
 cd snipit
 python -m pip install -r requirements.txt
+# macOS extra (for global hotkey + tray menu bar):
+#   pip will pull pyobjc-framework-Cocoa via pystray when needed
+# Linux extra: sudo apt install gir1.2-appindicator3  # for tray
 ```
 
 ## Run
 
-```powershell
-python -m snipit            # or: .\run.ps1
+```bash
+python -m snipit            # or: .\run.ps1 (Windows) / ./run.sh (macOS/Linux)
 python -m snipit --version
 python -m snipit --reset-db # wipe the database and reseed samples
+# Alternative Tauri desktop app (native window, faster startup):
+#   npm install --include=dev && npm run tauri dev  # dev
+#   ./scripts/build-macos.sh  # or build.py / build.ps1 for Python bundle
 ```
 
-First launch seeds 10 sample snippets (Windows commands + a few chat prompts) and
+First launch seeds 10 sample snippets (platform-specific: `ipconfig` on Windows / `ifconfig` on macOS / `ip` on Linux + a few chat prompts) and
 shows the window once so you can see it working. Afterwards it starts hidden in
-the tray.
+the tray / menu bar (use the hotkey or tray **Show** to bring it back).
+
+> **macOS: window not appearing?** The app lives in the menu bar after you close the window (`Hide` hides the window, `Quit` quits). Press **⌘+⌥+S** (or your `SNIPIT_HOTKEY`), click **Show SnipIt** in the menu-bar tray, or click the Dock icon. If the global hotkey does nothing, grant **Accessibility + Input Monitoring** to `Terminal`/`SnipIt` in *System Settings → Privacy & Security* — without it macOS blocks the hook and only the tray works.
 
 ## Usage
 
-| Action | Shortcut |
-| --- | --- |
-| Summon / hide | `Ctrl+Alt+S` (global) |
-| Move selection | `↑` / `↓` |
-| Copy selected | `Enter` |
-| Snippet details | double-click or `Ctrl+Enter` |
-| New snippet | `Ctrl+N` (also in tray menu) |
-| Edit snippet | `Ctrl+E` |
-| Delete snippet | `Ctrl+Del` (or `Del` when the search box is empty) |
-| Clear search / hide | `Esc` (first clears, second hides) |
-| Quit | tray icon → **Quit** |
+| Action | Shortcut (Windows/Linux) | Shortcut (macOS) |
+| --- | --- | --- |
+| Summon / hide | `Ctrl+Alt+S` (global) | `⌘+⌥+S` (`Cmd+Alt+S` global) |
+| Move selection | `↑` / `↓` | `↑` / `↓` |
+| Copy selected | `Enter` | `Enter` |
+| Snippet details | double-click or `Ctrl+Enter` | double-click or `⌘+Enter` / `Ctrl+Enter` |
+| New snippet | `Ctrl+N` (also in tray menu) | `⌘+N` / `Ctrl+N` |
+| Edit snippet | `Ctrl+E` | `⌘+E` / `Ctrl+E` |
+| Delete snippet | `Ctrl+Del` (or `Del` when search empty) | `⌘+Del` / `Ctrl+Del` |
+| Clear search / hide | `Esc` (first clears, second hides) | `Esc` |
+| Quit | tray icon → **Quit** | menu bar → **Quit** / tray → **Quit** |
 
 Focus stays in the search box while you browse, so `Ctrl+Del` is the delete
 that always works; plain `Del` edits your query whenever there is a query to
@@ -137,8 +146,8 @@ Environment variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SNIPIT_HOTKEY` | `ctrl+alt+s` | Global hotkey (`keyboard` library syntax, e.g. `ctrl+shift+space`) |
-| `SNIPIT_DATA_DIR` | `%APPDATA%` | Where `SnipIt\snipit.db` lives |
+| `SNIPIT_HOTKEY` | `ctrl+alt+s` (Win/Linux) / `command+alt+s` (macOS) | Global hotkey (`keyboard` library syntax, e.g. `ctrl+shift+space`, `command+alt+s`; Tauri uses `Ctrl+Alt+S` / `Cmd+Alt+S`) |
+| `SNIPIT_DATA_DIR` | `%APPDATA%` (Win) / `~/Library/Application Support/SnipIt` (macOS) / `~/.local/share/snipit` (Linux) | Where `SnipIt\snipit.db` lives |
 | `SNIPIT_GOOGLE_CLIENT_ID` | *(empty = cloud disabled)* | Google OAuth client ID for cloud backup |
 | `SNIPIT_GOOGLE_CLIENT_SECRET` | *(empty)* | Client secret — only for "Web application" OAuth clients; leave empty for Desktop app |
 
@@ -152,9 +161,9 @@ keep longer snippets.
 
 ## Data
 
-- Database: `%APPDATA%\SnipIt\snipit.db` (plus `-wal` / `-shm` while running)
-- Cloud backups: `%APPDATA%\SnipIt\backups\` (local snapshots +
-  `pre_restore_*` safety snapshots); OAuth tokens: `cloud_token.json`
+- Database: `%APPDATA%\SnipIt\snipit.db` (Windows), `~/Library/Application Support/SnipIt/snipit.db` (macOS), `~/.local/share/snipit/snipit.db` (Linux) — plus `-wal` / `-shm` while running
+- Cloud backups: `<data_dir>/backups/` (local snapshots +
+  `pre_restore_*` safety snapshots); OAuth tokens: `<data_dir>/cloud_token.json`
   (deleted on Disconnect)
 - Schema: `snippets(id, heading, content, created_at, updated_at, last_used_at)`
   — `last_used_at` drives the MRU ordering (NULL = never used); content is
@@ -166,11 +175,23 @@ keep longer snippets.
 - Delete the files (or use `--reset-db`, which also clears a stale `-wal`) to
   start over. Quit SnipIt from the tray first — it holds the database open.
 
-## Build a standalone .exe (optional)
+## Build a standalone executable (optional)
 
+*Windows:*
 ```powershell
 .\build.ps1        # uses PyInstaller -> dist\snipit.exe (no console)
 ```
+
+*macOS / Linux (PyInstaller — same as Windows, different output):*
+```bash
+python build.py              # -> dist/snipit (Mach-O executable)
+python build.py --onedir     # -> dist/snipit/ + dist/snipit.app (recommended for .app)
+./build.sh                   # same, macOS/Linux helper
+# For a signed macOS .app / dmg via Tauri (native WebView, faster):
+./scripts/build-macos.sh     # -> src-tauri/target/release/bundle/
+```
+
+On macOS PyInstaller needs a Python with Tk (e.g. `brew install tcl-tk` then `pyenv install` with `--with-tcltk-*`), and onefile+windowed is deprecated for `.app` — use `--onedir` or Tauri.
 
 ## Project layout
 
@@ -216,6 +237,6 @@ and handed back.
 
 - The global hotkey uses a low-level keyboard hook, which Windows does not
   deliver while a **UAC-elevated** window has focus. Ctrl+Alt+S will not fire
-  from an admin terminal unless SnipIt itself runs elevated.
+  from an admin terminal unless SnipIt itself runs elevated. **macOS** requires **Accessibility + Input Monitoring** permission for the hotkey (`System Settings → Privacy & Security`); without it, use the menu-bar tray.
 - A PyInstaller one-file build that installs a keyboard hook is a common
-  antivirus false positive; expect to whitelist `dist\snipit.exe`.
+  antivirus false positive; expect to whitelist `dist\snipit.exe` (Windows) / `dist/snipit` (macOS/Linux). On macOS Gatekeeper may block unsigned builds — right-click → Open or `xattr -d com.apple.quarantine dist/snipit` / `dist/snipit.app`.
